@@ -33,6 +33,24 @@ Exit code is non-zero when more than `--max-failure-rate` of pages fail
 or when there is nothing to grade. Pages with no matching OCR file are
 logged and skipped.
 
+## Quickstart: you already have OCR files (vendor collections)
+
+1. Your OCR lives in a folder, e.g. `ocr/` with files like `issue-042-p001.xml`
+   (ALTO/PAGE XML, hOCR, or plain text — all fine as-is).
+2. Make a `gt/` folder. Pick 10–20 pages to sample; for each, type what the
+   page actually says into a plain-text file named after the OCR file with
+   `.gt.txt` in place of its extension: `ocr/issue-042-p001.xml` is graded by
+   `gt/issue-042-p001.gt.txt`. Only sampled pages need GT files.
+3. Grade and read the results:
+
+       uvx --from git+https://github.com/trevormunoz/dpi-dinglehopper-eval dpi-eval gt/ ocr/ reports/
+
+   Batch scores: `reports/summary.html` (or `summary.json` for machines);
+   per-page side-by-side diffs: `reports/<page>.html`.
+
+If you only have *images* (no OCR yet), an OCR step has to run first — see
+[iiif_ocr](https://github.com/aguilarm-umd/iiif_ocr) and the runbook below.
+
 ## Demo runbook (iiif_ocr path)
 
 1. Run your manifest through iiif_ocr:
