@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+ <head>
+  <title></title>
+  <meta name="ocr-system" content="iiif_ocr test fixture" />
+  <meta name="ocr-capabilities" content="ocr_page ocr_line ocrx_word" />
+ </head>
+ <body>
+  <div class="ocr_page" title='image "page_0.jpg"; bbox 0 0 1000 1400'>
+   <span class="ocr_line" title="bbox 10 10 600 40">
+    <span class="ocrx_word" title="bbox 10 10 90 40">The</span>
+    <span class="ocrx_word" title="bbox 100 10 220 40">quick</span>
+    <span class="ocrx_word" title="bbox 230 10 380 40">brovvn</span>
+    <span class="ocrx_word" title="bbox 390 10 470 40">fox</span>
+   </span>
+   <span class="ocr_line" title="bbox 10 60 600 90">
+    <span class="ocrx_word" title="bbox 10 60 140 90">jumps</span>
+    <span class="ocrx_word" title="bbox 150 60 250 90">high.</span>
+   </span>
+  </div>
+ </body>
+</html>
