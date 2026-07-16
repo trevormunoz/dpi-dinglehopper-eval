@@ -64,6 +64,12 @@ benefit the OCR-D ecosystem generally.
 **Pairing convention.** GT transcriptions for iiif_ocr output follow its stem:
 `page_{i}.gt.txt` grades `page_{i}.hocr`.
 
+**Status (implementation, 2026-07-16).** Adapter shipped in `src/dpi_eval/adapter.py`
+with hOCR and ALTO end-to-end tests. Two facts pinned empirically during the build:
+`dinglehopper-summarize` tolerates a non-report `_normalized/` subdirectory inside
+the reports folder (regression test in `tests/test_batch.py`), and dinglehopper
+accepts ALTO ns-v3 namespace fixtures without conversion.
+
 ## 3. IIIF-viewer side-by-side QC — post-sprint enhancement
 
 **Idea (T. Muñoz, 2026-07-16).** Since inputs are IIIF manifests and hOCR carries
