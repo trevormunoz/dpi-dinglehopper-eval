@@ -1,6 +1,7 @@
 """Run dinglehopper over GT/OCR pairs via its console scripts."""
 
 import logging
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,6 +57,16 @@ def run_batch(
         logger.error("nothing to grade: no GT/OCR pairs in %s / %s", gt_dir, ocr_dir)
         return result, 1
 
+    if reports_dir.exists():
+        stale = list(reports_dir.glob("*.json")) + list(reports_dir.glob("*.html"))
+        for stale_file in stale:
+            stale_file.unlink()
+        normalized_dir = reports_dir / "_normalized"
+        if normalized_dir.exists():
+            shutil.rmtree(normalized_dir, ignore_errors=True)
+        if stale:
+            logger.info("cleared %d stale report(s) from %s", len(stale), reports_dir)
+
     workdir = reports_dir / "_normalized"
     for gt, ocr in pairs:
         stem = gt.name[: -len(".gt.txt")]
@@ -64,7 +75,10 @@ def run_batch(
             run_page(gt, normalized, reports_dir, prefix=stem)
             result.succeeded.append(stem)
         except Exception as exc:  # skip-and-log per spec; batch verdict below
-            logger.warning("page %r failed: %s", stem, exc)
+            detail = (getattr(exc, "stderr", None) or "").strip()
+            last_line = detail.splitlines()[-1] if detail else ""
+            suffix = f" — {last_line}" if last_line else ""
+            logger.warning("page %r failed: %s%s", stem, exc, suffix)
             result.failed.append(stem)
 
     if result.succeeded:

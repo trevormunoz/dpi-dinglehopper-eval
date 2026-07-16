@@ -87,6 +87,23 @@ def test_hocr_batch_creates_normalized_dir_and_summary_still_works(tmp_path):
     assert json.loads(result.summary.read_text(encoding="utf-8"))
 
 
+def test_stale_reports_cleared_before_rerun(tmp_path):
+    """Re-running into a populated reports_dir must not poison summary.json
+    with stale per-page reports from a prior run."""
+    gt_dir, ocr_dir = _setup_batch(tmp_path)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    (reports / "page_9.json").write_text(json.dumps({"cer": 0.9}), encoding="utf-8")
+    (reports / "summary.json").write_text(json.dumps({"num_reports": 99}), encoding="utf-8")
+
+    result, code = run_batch(gt_dir, ocr_dir, reports)
+
+    assert code == 0
+    assert not (reports / "page_9.json").exists()
+    summary = json.loads(result.summary.read_text(encoding="utf-8"))
+    assert summary["num_reports"] == 2
+
+
 def test_empty_batch_exits_nonzero(tmp_path):
     (tmp_path / "gt").mkdir()
     (tmp_path / "ocr").mkdir()

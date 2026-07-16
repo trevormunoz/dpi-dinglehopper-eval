@@ -17,7 +17,8 @@ _HOCR_MARKERS = (b"ocr_page", b'name="ocr-system"', b"name='ocr-system'")
 
 
 def sniff_format(path: Path) -> str:
-    head = path.open("rb").read(_SNIFF_BYTES)
+    with path.open("rb") as f:
+        head = f.read(_SNIFF_BYTES)
     if any(marker in head for marker in _HOCR_MARKERS):
         return "hocr"
     return "passthrough"
