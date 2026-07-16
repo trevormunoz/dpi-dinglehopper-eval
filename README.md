@@ -18,7 +18,9 @@ ground-truth samples and emit machine-readable quality metrics.
   (ALTO/PAGE), or `<stem>.txt`. hOCR is converted internally; everything
   else goes to dinglehopper untouched.
 - `REPORTS_DIR` — receives per-page `<stem>.json` / `<stem>.html` and
-  batch-level `summary.json` / `summary.html`.
+  batch-level `summary.json` / `summary.html`. The tool owns this directory:
+  stale reports from prior runs are cleared at the start of each run so
+  re-grading never mixes old and new results.
 
 Exit code is non-zero when more than `--max-failure-rate` of pages fail
 or when there is nothing to grade. Pages with no matching OCR file are
