@@ -4,7 +4,14 @@ DPI glue around [dinglehopper](https://github.com/qurator-spk/dinglehopper)
 (unmodified dependency — we do not fork) to grade OCR output against
 ground-truth samples and emit machine-readable quality metrics.
 
-## Setup
+## Quick start (no install)
+
+With [uv](https://docs.astral.sh/uv/) installed, run directly from GitHub —
+no clone, no setup, no elevated permissions:
+
+    uvx --from git+https://github.com/trevormunoz/dpi-dinglehopper-eval dpi-eval GT_DIR OCR_DIR REPORTS_DIR
+
+## Setup (working copy)
 
     uv sync
 
