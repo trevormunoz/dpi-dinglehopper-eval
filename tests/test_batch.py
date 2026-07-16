@@ -67,6 +67,26 @@ def test_missing_ocr_is_reported_not_fatal(tmp_path):
     assert result.missing == ["page_9"]
 
 
+def test_hocr_batch_creates_normalized_dir_and_summary_still_works(tmp_path):
+    """hOCR input forces _normalized/ inside reports_dir before summarize runs."""
+    gt_dir = tmp_path / "gt"
+    ocr_dir = tmp_path / "ocr"
+    gt_dir.mkdir()
+    ocr_dir.mkdir()
+    gt = (FIXTURES / "hocr" / "page_0.gt.txt").read_text(encoding="utf-8")
+    hocr = (FIXTURES / "hocr" / "page_0.hocr").read_text(encoding="utf-8")
+    (gt_dir / "page_0.gt.txt").write_text(gt, encoding="utf-8")
+    (ocr_dir / "page_0.hocr").write_text(hocr, encoding="utf-8")
+    reports = tmp_path / "reports"
+    result, code = run_batch(gt_dir, ocr_dir, reports)
+    assert code == 0
+    # Proves the scenario is actually exercised: normalization wrote into
+    # reports_dir / "_normalized" and summarize still succeeded around it.
+    assert (reports / "_normalized" / "page_0.txt").exists()
+    assert json.loads((reports / "page_0.json").read_text(encoding="utf-8"))
+    assert json.loads(result.summary.read_text(encoding="utf-8"))
+
+
 def test_empty_batch_exits_nonzero(tmp_path):
     (tmp_path / "gt").mkdir()
     (tmp_path / "ocr").mkdir()
