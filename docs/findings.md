@@ -83,3 +83,52 @@ dinglehopper's HTML report is a highlighted text side-by-side, and
 
 **Trigger to build.** Reviewers actually using the demo outputs ask "where on the
 page is this error?" more often than the two stock views answer it.
+
+## 4. Stakeholder context — DPI content streams and users
+
+**Source (2026-07-16).** Josh, Kate Dohe, Pamela McClanahan (UMD Libraries).
+
+Two distinct content streams:
+
+- **Vendor-OCR'd repository collections** — Student Newspapers, Advancing
+  Workers' Rights, Katherine Anne Porter. Existing OCR from vendors.
+- **Hornbake Digitization Center (HDC)** — scan-by-request plus project
+  digitization (print media, archival documents, photography, microfilm),
+  staffed by student workers. Wants OCR (and eventually alt text) incorporated
+  into request/project workflows.
+
+**Implications for this tool:**
+
+- **Demo batch candidates are now named.** The vendor collections are the
+  natural first target: existing OCR exercises the passthrough path with zero
+  extra work, and grading vendor deliverables against a GT sample is the
+  "vendor verification" ground-truth strategy from the design spec — now with
+  named stakeholders.
+- **Engine-vs-engine comparison needs no new code.** One GT sample + two
+  `dpi-eval` runs (vendor OCR dir; iiif_ocr/PaddleOCR output dir) answers
+  "would in-house re-OCR beat the vendor OCR?" — directly relevant to the
+  "bulk OCR on repository collections" question.
+
+## 5. Web interface for student workers — adoption requirement, post-sprint
+
+**Source.** Kate Dohe: HDC relies on student workers; "a straightforward web
+interface for students to use would be preferable to anything that requires
+more sophisticated CLI skills or elevated local permissions."
+
+**Reading.** The `dpi-eval` CLI is the engine, not the interface. For HDC
+adoption, a thin web wrapper (choose files → run → view reports) is the
+natural next project — a separate spec/plan cycle, not an extension of this
+one. The CLI's exit codes and JSON outputs are already the right substrate
+for it.
+
+**Trigger to build.** An HDC pilot is actually scheduled (take Pamela up on
+the workflow tour first).
+
+## 6. Alt text generation — separate workstream, log only
+
+**Source.** Pamela McClanahan: eventually incorporate OCR *and alt text
+generation* into student digitization workflows.
+
+**Reading.** Generation, not evaluation — adjacent to iiif_ocr's model stack,
+not to dinglehopper. Out of scope for this tool; recorded so the roadmap
+conversation has a home.
