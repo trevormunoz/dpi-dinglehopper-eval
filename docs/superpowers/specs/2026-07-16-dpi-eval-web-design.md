@@ -21,8 +21,8 @@ A student runs one pinned command:
 
 A browser tab opens. The student picks a ground-truth folder and an OCR
 folder through native folder dialogs, clicks Run, and reads the batch
-summary and per-page diff reports. A zip download preserves the results
-after the server stops.
+summary and per-page diff reports. Runs persist in a visible folder
+(`~/dpi-eval-runs/`); a zip download packages results for handoff.
 
 ## Platform decision (pressure-tested)
 
@@ -74,23 +74,29 @@ FastAPI + uvicorn + python-multipart, declared in `pyproject.toml`.
 ## Components
 
 1. **Entry point.** `dpi-eval-web = "dpi_eval.web:main"` in
-   `[project.scripts]`. `main()` binds uvicorn to `127.0.0.1` on an
-   ephemeral port, opens the browser via `webbrowser.open`, and prints the
-   URL as a fallback.
+   `[project.scripts]`. `main()` binds uvicorn to `127.0.0.1` on port 8765
+   (bookmarkable day to day), falling back to an ephemeral port if 8765 is
+   taken; opens the browser via `webbrowser.open` and prints the URL as a
+   fallback.
 2. **Form page (`GET /`).** One self-contained HTML document — inline CSS,
    no CDN, no external requests (lab machines may be offline). Two folder
    inputs (`webkitdirectory`): ground truth and OCR. One Run button that
    disables itself with a "grading…" state on submit. Inline instructions
    cover the naming convention (`<stem>.gt.txt` grades `<stem>.hocr/.xml/.txt`)
-   so the page teaches itself.
+   so the page teaches itself. A footer note covers shutdown: "Done? Close
+   this window and the terminal window it came from" — no quit endpoint.
 3. **Grade endpoint (`POST /grade`).** Receives both file sets as
    multipart. Flattens filenames to basenames — matching the flat-directory
-   convention `pairing.py` expects — into a per-run working directory under
-   the session tempdir: `run-NNN/gt/`, `run-NNN/ocr/`. Pre-flight: if the
-   GT selection contains no `*.gt.txt` files, return a friendly error with
-   a naming hint before running anything. Otherwise call
+   convention `pairing.py` expects — into a per-run working directory
+   `~/dpi-eval-runs/run-NNN/` (`gt/`, `ocr/`, `reports/`). Pre-flight
+   checks, each a friendly error before anything runs: the GT selection
+   must contain `*.gt.txt` files (with a naming hint if not), and
+   flattening must produce no basename collisions — if two uploaded files
+   share a basename, refuse the run and name both paths (silently grading
+   the wrong page is worse than no grade). Then call
    `run_batch(gt, ocr, reports)` synchronously and redirect to the results
-   page. Per-run directories keep earlier runs viewable all session.
+   page. Runs persist across server restarts; students can find them in
+   Finder/Explorer.
 4. **Results page (`GET /runs/{id}`).** Rendered from `BatchResult`:
    graded/failed/missing counts; failed and missing stems listed by name so
    the student knows which pages to fix; a prominent link to
@@ -99,16 +105,16 @@ FastAPI + uvicorn + python-multipart, declared in `pyproject.toml`.
    self-contained HTML served byte-for-byte as-is. The reports ARE the UI
    for results; this design adds no report rendering of its own.
 6. **Zip download (`GET /runs/{id}/download`).** `shutil.make_archive` over
-   the run's reports directory + `FileResponse`. Results must outlive the
-   tempdir: students hand them to supervisors or attach them to request
-   tickets.
+   the run's reports directory + `FileResponse`. Packages results into one
+   file students can hand to supervisors or attach to request tickets.
 
 ## Data flow
 
-Browser folder dialogs → loopback multipart POST → tempdir `gt/` + `ocr/`
-→ `run_batch` → per-page reports + `summary.{json,html}` → redirect to
-results page → student reads summary and per-page diffs, downloads zip.
-Everything lives under one session tempdir the OS reclaims.
+Browser folder dialogs → loopback multipart POST →
+`~/dpi-eval-runs/run-NNN/` `gt/` + `ocr/` → `run_batch` → per-page reports
++ `summary.{json,html}` → redirect to results page → student reads summary
+and per-page diffs, downloads zip. Runs persist until the student deletes
+them; nothing leaves the machine.
 
 ## Error handling
 
@@ -118,6 +124,8 @@ Reuse the engine's verdicts; add plain language, not new logic.
   threshold) → failure banner on the results page, never a stack trace.
 - Empty or `.gt.txt`-free GT upload → immediate friendly error with a
   naming hint.
+- Basename collision after flattening → refuse the run, naming both
+  colliding paths (never silently grade the wrong page).
 - `--max-failure-rate` keeps its engine default (0.2); no UI knob.
 
 ## Testing
@@ -128,7 +136,8 @@ untouched.
 - Form page renders (200, folder inputs present).
 - **Tracer bullet:** one fixture pair POSTs through `/grade` end-to-end;
   redirect lands on a results page; `summary.html` is served.
-- Empty and mismatched uploads produce the friendly errors.
+- Empty, mismatched, and basename-colliding uploads produce the friendly
+  errors.
 - A failing batch produces the banner, not a 500.
 - Zip download returns a well-formed archive containing the reports.
 
