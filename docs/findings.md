@@ -43,3 +43,37 @@ hatches, either is small:
 
 **Status.** Not sprint scope — the uv venv absorbs the weight for the demo. Logged
 for post-demo triage.
+
+## 2. hOCR input support — upstream-PR candidate (shim as wrapper work meanwhile)
+
+**Context.** [iiif_ocr](https://github.com/aguilarm-umd/iiif_ocr) (M. Aguilar,
+UMD) runs PaddleOCR over IIIF manifest canvases and emits one hOCR file per page
+(`downloads/<manifest-uuid>/page_{i}.hocr`, stem = zero-based canvas index).
+Grading its output with dinglehopper gives DPI real CER/WER numbers for that
+pipeline — but dinglehopper reads only ALTO/PAGE/plain text (auto-detected in
+`ocr_files.py`), not hOCR.
+
+**Sprint scope (wrapper work).** Input adapter in this repo: sniff hOCR by its
+`ocr_page` class markup, extract line text with a ~30-line lxml shim, pass
+everything else through untouched. Spec amended 2026-07-16 to include it.
+
+**Proposed upstream PR.** Add hOCR extraction to dinglehopper's format dispatcher
+(`ocr_files.py`) alongside ALTO/PAGE detection. Would make our shim deletable and
+benefit the OCR-D ecosystem generally.
+
+**Pairing convention.** GT transcriptions for iiif_ocr output follow its stem:
+`page_{i}.gt.txt` grades `page_{i}.hocr`.
+
+## 3. IIIF-viewer side-by-side QC — post-sprint enhancement
+
+**Idea (T. Muñoz, 2026-07-16).** Since inputs are IIIF manifests and hOCR carries
+word/line coordinates, convert hOCR to IIIF annotations and overlay OCR text on
+page images in Mirador/Universal Viewer for in-place visual QC.
+
+**Why not now (REDUCE).** New moving parts: hOCR→annotation conversion, annotation
+hosting, viewer config. Meanwhile ~90% of the QC value already exists stock:
+dinglehopper's HTML report is a highlighted text side-by-side, and
+`iiif_ocr --visualize` emits page images with OCR bounding boxes drawn on.
+
+**Trigger to build.** Reviewers actually using the demo outputs ask "where on the
+page is this error?" more often than the two stock views answer it.

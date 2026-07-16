@@ -43,29 +43,42 @@ All DPI-owned code is thin glue; dinglehopper is an unmodified dependency.
    plain text (dinglehopper compares plain-text GT against ALTO OCR directly; no XML
    markup needed). The sampling approach (which pages, how many) is a sprint finding,
    not a fixed input.
-2. **Batch runner.** Thin script that pairs GT files with OCR files by naming
-   convention, invokes `dinglehopper` per page into a reports folder, logs and skips
-   pages that fail (missing pair, parse error), and exits non-zero above a failure
-   threshold. dinglehopper has a directory mode; the runner may shrink to almost
-   nothing.
-3. **Batch rollup.** Stock `dinglehopper-summarize` over the reports folder →
+2. **Input adapter** *(amended 2026-07-16)*. Normalizes OCR input so sources are
+   swappable and chosen contextually: ALTO/PAGE/plain text pass through untouched
+   (dinglehopper auto-detects them); hOCR — e.g. from
+   [iiif_ocr](https://github.com/aguilarm-umd/iiif_ocr) (M. Aguilar, UMD) — is
+   sniffed by its `ocr_page` markup and converted to plain text via a ~30-line lxml
+   shim. Long-term home for hOCR support is upstream (`ocr_files.py` dispatcher);
+   the shim is designed to be deletable.
+3. **Batch runner.** Thin script that pairs GT files with OCR files by naming
+   convention, runs each pair through the input adapter, invokes `dinglehopper` per
+   page into a reports folder, logs and skips pages that fail (missing pair, parse
+   error), and exits non-zero above a failure threshold. For iiif_ocr output,
+   pairing keys on its `downloads/<manifest-uuid>/page_{i}.hocr` convention (GT as
+   `page_{i}.gt.txt`), which is simpler than arbitrary-batch filename matching.
+4. **Batch rollup.** Stock `dinglehopper-summarize` over the reports folder →
    `summary.json` + `summary.html`.
 
-## Scope fence (REDUCE)
+## Scope fence (REDUCE, amended 2026-07-16)
 
-- Demo batch: one that **already has ALTO** output.
-- hOCR / PDF-embedded-text materials: **out of scope to build**; the conversion shim is
-  documented as a known gap with an effort estimate in the findings note. Build only if
-  the sole available real batch forces it.
+- OCR input formats: ALTO/PAGE/plain text (stock dinglehopper) **and hOCR via the
+  input adapter** — brought into scope to make iiif_ocr output a first-class,
+  swappable source. In exchange, arbitrary-batch filename matching is simplified.
+- Demo batch: whichever real data is available first — an existing ALTO batch or
+  an iiif_ocr run on a real manifest. The glue supports both by design.
+- PDF-embedded-text materials: still out of scope (documented gap).
 - Materials with no OCR yet: out of scope entirely.
-- No new metrics, no custom report formats, no dashboard.
+- No new metrics, no custom report formats, no dashboard. IIIF-viewer overlay of
+  OCR on page images (Mirador/UV annotations): logged as post-sprint enhancement
+  in the findings note, not built.
 
 ## Data flow
 
-DPI batch (images + ALTO) → sample pages selected → manual GT transcriptions (plain
-text) → runner invokes `dinglehopper <gt> <ocr>` per page → per-page `report.json` /
-`.html` → `dinglehopper-summarize` → `summary.json` for whatever pipeline/dashboard
-comes later.
+OCR source (vendor ALTO batch, or IIIF manifest → iiif_ocr → `page_{i}.hocr`) →
+sample pages selected → manual GT transcriptions (plain text) → input adapter
+normalizes OCR file if hOCR → runner invokes `dinglehopper <gt> <ocr>` per page →
+per-page `report.json` / `.html` → `dinglehopper-summarize` → `summary.json` for
+whatever pipeline/dashboard comes later.
 
 ## Error handling
 
