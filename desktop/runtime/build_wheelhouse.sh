@@ -12,24 +12,18 @@ elif [ -x payload/cpython/python.exe ]; then PY=payload/cpython/python.exe
 else echo "run fetch_python.sh first" >&2; exit 1; fi
 rm -rf "$OUT"; mkdir -p "$OUT"
 (cd "$REPO_ROOT" && uv build --wheel --out-dir "$PWD/desktop/runtime/$OUT")
+# Temporary venv for pip download (pip 24.3.1 requires an active virtualenv);
+# call pip by explicit path — bin/ on POSIX, Scripts/ on Windows (Git Bash).
+TMPVENV=$(mktemp -d)
+"$PY" -m venv "$TMPVENV"
+if [ -x "$TMPVENV/bin/pip" ]; then VPIP="$TMPVENV/bin/pip"; else VPIP="$TMPVENV/Scripts/pip.exe"; fi
 if [ "$MODE" = "--probe" ]; then
-  # Create temporary venv for pip download (pip 24.3.1 requires virtualenv)
-  TMPVENV=$(mktemp -d)
-  "$PY" -m venv "$TMPVENV"
-  . "$TMPVENV/bin/activate"
-  pip download --only-binary :all: fastapi uvicorn python-multipart lxml -d "$OUT" >/dev/null
-  deactivate
-  rm -rf "$TMPVENV"
+  "$VPIP" download --only-binary :all: fastapi uvicorn python-multipart lxml -d "$OUT" >/dev/null
 else
   (cd "$REPO_ROOT" && uv export --no-dev --no-emit-project --format requirements-txt) > "$OUT/requirements.txt"
-  # Create temporary venv for pip download (pip 24.3.1 requires virtualenv)
-  TMPVENV=$(mktemp -d)
-  "$PY" -m venv "$TMPVENV"
-  . "$TMPVENV/bin/activate"
-  pip download --only-binary :all: -r "$OUT/requirements.txt" -d "$OUT" >/dev/null
-  deactivate
-  rm -rf "$TMPVENV"
+  "$VPIP" download --only-binary :all: -r "$OUT/requirements.txt" -d "$OUT" >/dev/null
 fi
+rm -rf "$TMPVENV"
 PKG="dpi-dinglehopper-eval"
 HASH=$(ls "$OUT" | sort | shasum -a 256 | cut -d' ' -f1)
 printf '%s\n%s\n' "$PKG" "$HASH" > "$OUT/MANIFEST"
