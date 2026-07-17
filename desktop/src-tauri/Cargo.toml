@@ -14,8 +14,17 @@ tauri-plugin-dialog = "2"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Feature audit (windows 0.61.3 source, src/Windows/Win32/System/JobObjects/mod.rs):
+# - CreateJobObjectW: #[cfg(feature = "Win32_Security")] (SECURITY_ATTRIBUTES param)
+# - JOBOBJECT_EXTENDED_LIMIT_INFORMATION: #[cfg(feature = "Win32_System_Threading")]
+#   (IO_COUNTERS field lives in Win32::System::Threading)
+# - AssignProcessToJobObject / SetInformationJobObject / JOBOBJECTINFOCLASS consts /
+#   JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: module gate only (Win32_System_JobObjects)
+# - CloseHandle / HANDLE: Win32_Foundation (also implied transitively by any Win32_*)
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_System_JobObjects",
+    "Win32_System_Threading",
 ] }
