@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 dpi-eval = "dpi_eval.cli:main"
+dpi-eval-web = "dpi_eval.web:main"
 
 [build-system]
 requires = ["hatchling"]

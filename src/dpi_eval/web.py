@@ -8,8 +8,12 @@ import json
 import logging
 import re
 import shutil
+import socket
+import threading
+import webbrowser
 from pathlib import Path
 
+import uvicorn
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,6 +24,8 @@ from dpi_eval.runner import run_batch
 logger = logging.getLogger("dpi_eval.web")
 
 RUN_ID = re.compile(r"run-\d{3,}")
+HOST = "127.0.0.1"
+PREFERRED_PORT = 8765
 
 
 def _real_uploads(uploads: list[UploadFile]) -> list[UploadFile]:
@@ -192,3 +198,27 @@ def create_app(base_dir: Path) -> FastAPI:
         )
 
     return app
+
+
+def _pick_port(preferred: int = PREFERRED_PORT) -> int:
+    """Prefer the bookmarkable port; fall back to an ephemeral one."""
+    try:
+        with socket.socket() as probe:
+            probe.bind((HOST, preferred))
+            return preferred
+    except OSError:
+        with socket.socket() as probe:
+            probe.bind((HOST, 0))
+            return probe.getsockname()[1]
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    port = _pick_port()
+    url = f"http://{HOST}:{port}"
+    app = create_app(Path.home() / "dpi-eval-runs")
+    print(f"dpi-eval-web running at {url}")
+    print("Done? Close the browser tab, then close this window (or press Ctrl+C).")
+    threading.Timer(1.0, webbrowser.open, args=[url]).start()
+    uvicorn.run(app, host=HOST, port=port, log_level="warning")
+    return 0

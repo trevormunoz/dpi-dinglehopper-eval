@@ -1,5 +1,6 @@
 import io
 import json
+import socket
 import zipfile
 from pathlib import Path
 
@@ -237,3 +238,22 @@ def test_zip_download_without_reports_is_404(tmp_path):
         follow_redirects=False,
     )
     assert client.get("/runs/run-001/download").status_code == 404
+
+
+def test_pick_port_falls_back_when_preferred_taken():
+    from dpi_eval.web import _pick_port
+
+    with socket.socket() as blocker:
+        blocker.bind(("127.0.0.1", 0))
+        busy = blocker.getsockname()[1]
+        chosen = _pick_port(preferred=busy)
+        assert chosen != busy
+
+
+def test_pick_port_prefers_free_port():
+    from dpi_eval.web import _pick_port
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        free = probe.getsockname()[1]
+    assert _pick_port(preferred=free) == free
