@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "dpi-eval",
+  "version": "0.1.0",
+  "identifier": "edu.umd.dpi-eval",
+  "app": {
+    "windows": [
+      { "title": "dpi-eval", "width": 900, "height": 700 }
+    ],
+    "security": { "csp": null }
+  },
+  "build": { "frontendDist": "../ui" },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "nsis"],
+    "windows": { "nsis": { "installMode": "currentUser" } },
+    "resources": { "../runtime/payload/": "runtime/" }
+  }
+}
