@@ -244,3 +244,21 @@ Deferred, each with its trigger to build:
   far future: requires dinglehopper to become ocrd-free AND report
   rendering to decouple from its `cli.py` — see findings #1. Logged so
   the idea has a home; not a roadmap item.
+
+## 9. dinglehopper grades unreadable input as plain text — pilot data-quality caveat, possible upstream flag
+
+**Source (2026-07-17).** Surfaced writing `dpi-eval-web`'s failure-path tests:
+no upload payload can deterministically fail a page. dinglehopper 0.11.0 falls
+back to plain-text grading for XML it cannot parse (verified: `<not-valid-alto`
+as `.xml` grades with exit 0, WER 1.0 / CER 0.897), and lxml's HTML parser
+recovery-parses malformed hOCR in our adapter.
+
+**Implication for the HDC pilot.** A corrupt or wrong-format OCR file surfaces
+as a *terrible score*, not a failure — students should read a ~100% word error
+rate as "check the file," not "the OCR is that bad." The web UI's engine-level
+failure list only catches unreadable-at-the-OS-level inputs (see
+`tests/test_batch.py`'s directory trick).
+
+**Upstream candidate.** A dinglehopper `--strict-format` flag (error instead of
+plain-text fallback on unparseable XML) would let wrappers distinguish "bad
+recognition" from "bad file." Small, opt-in, mergeable.
