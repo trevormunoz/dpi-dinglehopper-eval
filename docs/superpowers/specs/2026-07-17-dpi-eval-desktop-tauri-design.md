@@ -7,10 +7,13 @@ reviewers, 2026-07-17) — pending human approval
 desktop shell, made bulletproof. No new user-facing features.
 **Deliverable of this cycle:** this spec only. Implementation is a later
 plan/build cycle.
-**Decision:** Tauri v2 shell around the existing FastAPI localhost app,
-with the Python engine frozen into a PyInstaller sidecar. macOS and
-Windows from day one. Unsigned artifacts for the pilot, gated by a
-managed-machine probe (below).
+**Decision:** Tauri v2 shell around the existing FastAPI localhost app.
+**Primary packaging: bundled runtime** — a standalone CPython plus an
+offline wheelhouse, installed into a venv on first launch, so pip
+manufactures the real console scripts and nothing is frozen. PyInstaller
+shapes are demoted to fallbacks. macOS and Windows from day one.
+Unsigned artifacts for the pilot, gated by a managed-machine probe
+(below).
 
 ## Goal
 
@@ -48,11 +51,13 @@ quarantine unsigned PyInstaller bootloaders, often silently). Either
 can kill the pilot regardless of how good the app is.
 
 **Before any build work beyond a hello-world artifact:** produce a
-minimal unsigned Tauri app with a trivial PyInstaller sidecar, per-user
-install, and run it on an actual HDC lab machine (both a macOS and a
-Windows workstation). The probe artifact is built in **both packaging
-shapes** (onedir-as-resources and onefile-multiplexer, below) so real
-machines arbitrate the packaging choice with data. This probe is the
+minimal unsigned Tauri app with a trivial bundled-runtime sidecar
+(pinned CPython + one-wheel wheelhouse + first-run venv bootstrap),
+per-user install, and run it on an actual HDC lab machine (both a macOS
+and a Windows workstation). The probe artifact uses the **primary bundled-runtime shape**
+(standalone CPython + trivial wheelhouse + first-run venv bootstrap);
+the PyInstaller fallback shapes are probed only if the primary fails
+on HDC hardware. This probe is the
 build cycle's Task 0 and its result is a findings entry either way.
 
 **On probe failure, the response is chosen at probe time by failure
@@ -68,48 +73,54 @@ Three layers; two already exist.
 
 1. **Tauri v2 Rust shell** (`desktop/src-tauri/`): window, native menus,
    sidecar lifecycle, single-instance guard. No business logic.
-2. **Frozen Python sidecar**: one PyInstaller **onedir** bundle exposing
-   three executables over a shared `_internal` runtime:
-   - `dpi-eval-web` — our server (app code unchanged except the
-     enumerated web-layer changes below)
-   - `dinglehopper` (stub: `from dinglehopper.cli import main`) and
-     `dinglehopper-summarize` (stub: `from dinglehopper.cli_summarize
-     import main` — note the distinct module) — dinglehopper's own
-     console entry points
+2. **Bundled Python runtime (primary)**: the app's resources carry a
+   standalone CPython (python-build-standalone, per-arch) and an
+   offline **wheelhouse** — every wheel the venv needs (our package,
+   dinglehopper, the ocrd stack, FastAPI/uvicorn). On first launch the
+   shell bootstraps a venv under the app data dir and installs from the
+   wheelhouse, offline, once. pip thereby generates the real
+   `dpi-eval-web`, `dinglehopper`, and `dinglehopper-summarize` console
+   scripts — the same installer-manufactured entry points uvx creates
+   today. The sidecar is `<venv>/bin/dpi-eval-web` (Scripts\ on
+   Windows). Nothing is frozen; there are no hand-written entry stubs.
 3. **The existing web pages** (`pages.py`), byte-for-byte unchanged,
    rendered in the system webview (WKWebView on macOS, WebView2 on
    Windows) pointed at the sidecar's localhost URL.
 
-**Packaging: two candidate shapes, probe decides.** Tauri's
-`externalBin` sidecar API expects a *single* target-triple-suffixed
-binary; a PyInstaller onedir is a *directory* (executables beside an
-`_internal` tree). The candidates:
+**Precedent:** this is the Datasette Desktop pattern (bundled Python +
+first-run pip install into a venv) — boring, long-precedented parts,
+in contrast to the PyInstaller shapes whose Tauri composition is
+unprecedented for a multi-command engine (see fallbacks below).
+
+**Fallback packaging shapes (PyInstaller — only if the bundled runtime
+fails its probe).** Recorded for completeness with the evidence that
+demoted them; not built unless the primary fails:
 
 - **A — onedir as `resources`:** three thin exes share one `_internal`
-  runtime; the whole folder ships as Tauri resources and the shell
-  spawns `dpi-eval-web` by absolute path via the shell plugin /
-  `std::process`. Process-lifetime handling is ours, not the sidecar
-  API's. No community example ships this exact shape, but it is the
-  inferred fix in the sources below.
+  runtime; folder ships as Tauri resources; shell spawns by absolute
+  path. No community example ships this exact shape.
 - **B — onefile + argv0 multiplexer via `externalBin`:** one
-  self-extracting binary dispatching on invoked name/first argument
-  (the community-recommended PyInstaller multi-entry pattern,
-  github.com/orgs/pyinstaller/discussions/6634), registered as the
-  single sidecar binary.
+  self-extracting binary dispatching on invoked name
+  (github.com/orgs/pyinstaller/discussions/6634). Disfavored by an
+  **open Tauri bug** — `child.kill()` kills only the PyInstaller
+  bootloader on Windows, the real server survives
+  (github.com/tauri-apps/tauri/issues/11686) — and onefile's
+  extract-to-temp is the documented worst case for AV heuristics
+  (pythonguis.com/faq/problems-with-antivirus-software-and-pyinstaller).
+- If a fallback is ever activated, the PyInstaller entry stubs
+  (`from dinglehopper.cli import main` / `from dinglehopper.cli_summarize
+  import main`) come back, and with them the constraint-interpretation
+  question the primary design dissolves (see Constraint statement) —
+  that question would need ratifying then, not now.
 
-Community evidence weighing on the probe (2026-07-17 research): onefile
-has an **open Tauri bug** — `child.kill()` kills only the PyInstaller
-bootloader on Windows and the real server survives
-(github.com/tauri-apps/tauri/issues/11686; also hit by the
-dieharders/example-tauri-v2-python-server-sidecar template, which is
-onefile and documents the same kill failure) — so candidate B is viable
-only with explicit real-child-PID/process-tree kill. Onefile's
-extract-to-temp behavior is also the documented worst case for AV
-heuristics (pythonguis.com/faq/problems-with-antivirus-software-and-
-pyinstaller), which bears directly on the probe's AV leg. If the probe
-is a tie on HDC machines, this evidence breaks it toward A.
+**First-run bootstrap.** Before the first spawn, the shell creates the
+venv from the bundled CPython and installs from the wheelhouse
+(offline; roughly a minute), showing a "Setting up…" progress state —
+never a frozen blank window. The bootstrap is idempotent and
+self-repairing: a marker file records success; a missing/corrupt venv
+is deleted and rebuilt. Subsequent launches skip straight to spawn.
 
-**Startup sequence.** Shell spawns `<resources>/sidecar/dpi-eval-web
+**Startup sequence.** Shell spawns `<venv>/bin/dpi-eval-web
 --no-browser` with `PYTHONUNBUFFERED=1` in the child environment →
 sidecar resolves a concrete port up front via the existing `_pick_port`
 (8765 preferred, ephemeral fallback — the printed URL is always real;
@@ -135,18 +146,21 @@ sysinfo tree-walks are the reported workarounds). Belt-and-suspenders
 fallback from the same sources: the sidecar polls parent liveness and
 self-terminates if orphaned.
 
-## The console-scripts problem (and why the engine stays unmodified)
+## The console-scripts problem (dissolved by the primary design)
 
 `runner.py` invokes `dinglehopper` / `dinglehopper-summarize` by name
-via PATH (`runner.py:19`, `runner.py:30`). The sidecar launcher prepends
-its own bundle directory to PATH before starting the server, so those
-subprocess calls resolve to the frozen executables. Zero engine changes.
+via PATH (`runner.py:19`, `runner.py:30`). In the bundled-runtime
+design these are ordinary pip-generated console scripts inside the
+venv; the shell prepends the venv's bin/Scripts directory to the
+sidecar's PATH. Zero engine changes, zero hand-written entry points.
 
 **Constraint statement.** The hard rule "never import `dinglehopper.*`"
-governs wrapper *code paths*. The PyInstaller entry stubs are packaging
-metadata — the same shims setuptools/uvx generate for console scripts
-today. No runtime wrapper code path gains a dinglehopper import;
-dinglehopper remains an unmodified dependency invoked as a subprocess.
+is satisfied in its strictest reading by the primary design: no file in
+this repo imports dinglehopper — the only import shims are the ones pip
+itself generates at install time, exactly as with uvx today. The
+permissive-vs-strict interpretation debate is live only in the
+PyInstaller fallback branch and is deferred until/unless that branch
+activates.
 
 ## Changes to the Python package (enumerated and closed)
 
@@ -167,14 +181,15 @@ set — "additive only" means exactly these, each with tests:
 
 Existing 37 tests stay green throughout.
 
-## Freezing risks (named, each with its gate)
+## Bundling risks (named, each with its gate)
 
-- **Data files:** dinglehopper's Jinja report templates, uniseg data
-  tables, ocrd resource files, rapidfuzz native modules — collected via
-  PyInstaller hooks/data specs.
-- **Gate (blocking, in CI):** a smoke test that grades the
-  `tests/fixtures/text` pair *inside the frozen bundle* — through the
-  frozen `dpi-eval-web` HTTP path end to end — must pass on every CI
+- **Wheelhouse completeness:** every transitive dependency must be
+  present as a wheel for the target platform/arch — a missing wheel
+  means a first-run failure on a student's machine, not ours.
+- **Gate (blocking, in CI):** on a network-isolated runner step, run
+  the bootstrap (venv + offline wheelhouse install) from the built
+  resources, then grade the `tests/fixtures/text` pair through the
+  venv's `dpi-eval-web` HTTP path end to end — must pass on every CI
   platform lane before any bundle is published.
 - **macOS architectures (review finding, decided):** `macos-latest`
   runners are arm64 and PyInstaller does not cross-compile; a
@@ -184,9 +199,10 @@ Existing 37 tests stay green throughout.
   Pamela's workflow tour surfaces Intel machines; until the inventory
   confirms, an Intel Mac receiving the artifact simply cannot launch
   it, and the uvx path is the answer there.
-- **Bundle size:** the ocrd stack is heavy; onedir avoids onefile's
-  unpack-per-launch cost. Expect a large app; recorded so nobody is
-  surprised.
+- **Bundle size:** the wheelhouse plus a standalone CPython is large
+  (the ocrd stack is heavy), and the installed venv roughly doubles the
+  on-disk footprint after first run. Acceptable for lab machines;
+  recorded so nobody is surprised.
 
 ## Known risk: folder pickers in WKWebView
 
@@ -249,29 +265,29 @@ built to serve — admin rights and a terminal command. Corrected:
 ## CI
 
 GitHub Actions matrix — `macos-latest` (arm64) and `windows-latest`
-(x86_64 macOS lane added only on Intel-inventory evidence): PyInstaller
-sidecar build in whichever shape the probe selected → frozen smoke test
-(blocking gate) → `tauri build` (NSIS per-user on Windows) → artifacts
-attached to the Release. Toolchains: Python (uv), Rust, Node (Tauri
-CLI).
+(x86_64 macOS lane added only on Intel-inventory evidence): wheelhouse
+build (uv, locked) + pinned python-build-standalone fetch →
+network-isolated bootstrap + grade smoke test (blocking gate) →
+`tauri build` (NSIS per-user on Windows) → artifacts attached to the
+Release. Toolchains: Python (uv), Rust, Node (Tauri CLI).
 
 ## Repo layout
 
 Same repo, new top-level `desktop/`:
 
     desktop/
-      src-tauri/           # Rust shell, tauri.conf.json
-      sidecar/
-        dpi_eval_web.spec  # PyInstaller spec, three entry points
-        stub_dinglehopper.py   # from dinglehopper.cli import main
-        stub_summarize.py      # from dinglehopper.cli_summarize import main
+      src-tauri/           # Rust shell, tauri.conf.json, bootstrap logic
+      runtime/
+        build_wheelhouse.sh  # uv-driven: export locked wheels per platform
+        python-version.txt   # pinned python-build-standalone release
 
 ## Testing / success criteria
 
 - Existing 37 tests green; new tests for the enumerated web-layer
   changes green.
 - Managed-machine probe passes on real HDC hardware (go/no-go).
-- CI frozen smoke test passes on all three lanes (blocking).
+- CI network-isolated bootstrap + grade smoke test passes on both lanes
+  (blocking).
 - Tracer: one fixture page graded end-to-end inside the Tauri window on
   macOS and Windows before any polish work.
 - A student-shaped walkthrough (double-click → approve once → pick
@@ -305,26 +321,26 @@ no source shows a stdout-only readiness handshake working reliably in
 production — hence sentinel-line-plus-URL-polling here. pytauri
 evaluated and deferred (pre-1.0, doesn't remove subprocess needs).
 
-## Open questions
+Packaging pivot 2026-07-17: the "no proven Tauri precedent for a
+multi-command frozen bundle" finding was treated as a smell (human
+call), and the bundled-runtime design was promoted to primary — it
+dissolves the three-executable problem and the entry-stub constraint
+question simultaneously (two independent pressures converging on one
+architecture), trading exotic-but-few moving parts for
+boring-but-more. PyInstaller shapes retained as documented fallbacks.
 
-**Open for the human, before the build cycle:**
+## Open questions (resolve during the build cycle, not before)
 
-- Constraint interpretation for the PyInstaller entry stubs — does
-  "never import `dinglehopper.*`" govern runtime wrapper code paths
-  (stubs allowed as installer-artifact reproductions) or every file in
-  the repo (forcing an embedded-venv freezing architecture instead)?
-  The Constraint statement section above records the permissive
-  reading; it is not yet ratified.
-
-**Resolve during the build cycle, not before:**
-
-- Managed-machine probe outcome — packaging shape (A vs B) and, on
-  failure, which response branch the failure mode argues for
+- Managed-machine probe outcome — go/no-go and, on failure, which
+  response branch the failure mode argues for; fallback shapes A/B
+  probed only if the bundled runtime fails
 - HDC hardware inventory: macOS arm64 vs x86_64 mix; Windows version
   (pilot precheck, from Pamela's workflow tour)
-- Exact PyInstaller hook set for the ocrd stack (discovered by the CI
-  smoke test, not guessable from docs)
+- First-run bootstrap duration on real lab hardware (sets the progress
+  UI's expectations copy)
 - Whether WKWebView passes the `webkitdirectory` tracer (decides the
   native-dialog contingency and its spec amendment)
 - Windows: whether SmartScreen reputation makes NSIS `.exe` per-user
   the least-scary artifact in practice (probe data)
+- (Fallback branch only) exact PyInstaller hook set for the ocrd
+  stack, and ratification of the entry-stub constraint interpretation
