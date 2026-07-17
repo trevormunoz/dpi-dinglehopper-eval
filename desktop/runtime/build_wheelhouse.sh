@@ -21,7 +21,18 @@ if [ "$MODE" = "--probe" ]; then
   "$VPIP" download --only-binary :all: fastapi uvicorn python-multipart lxml -d "$OUT" >/dev/null
 else
   (cd "$REPO_ROOT" && uv export --no-dev --no-emit-project --format requirements-txt) > "$OUT/requirements.txt"
-  "$VPIP" download --only-binary :all: -r "$OUT/requirements.txt" -d "$OUT" >/dev/null
+  # atomicwrites 1.4.1 (transitive via ocrd) ships no wheel on PyPI — pure
+  # Python, so we build its wheel here at bundle time; everything else must
+  # already be a wheel. --no-emit-package drops its multi-line hashed entry
+  # cleanly (a grep -v would orphan the continuation --hash line), and
+  # --no-deps stops pip re-resolving ocrd's deps (which would demand the
+  # excluded atomicwrites) — the uv export is already the full closure, and
+  # the offline install rehearsal re-checks completeness.
+  (cd "$REPO_ROOT" && uv export --no-dev --no-emit-project --no-emit-package atomicwrites --format requirements-txt) > "$OUT/requirements-wheels.txt"
+  "$VPIP" download --no-deps --only-binary :all: -r "$OUT/requirements-wheels.txt" -d "$OUT" >/dev/null
+  ATOMIC_PIN=$(grep -o '^atomicwrites==[^ ]*' "$OUT/requirements.txt")
+  "$VPIP" wheel --no-deps "$ATOMIC_PIN" -w "$OUT" >/dev/null
+  rm -f "$OUT/requirements-wheels.txt"
 fi
 rm -rf "$TMPVENV"
 PKG="dpi-dinglehopper-eval"
