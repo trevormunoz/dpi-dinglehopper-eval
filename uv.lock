@@ -632,18 +632,30 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "dinglehopper" },
+    { name = "fastapi" },
+    { name = "python-multipart" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "httpx" },
     { name = "pytest" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "dinglehopper", specifier = ">=0.11.0" }]
+requires-dist = [
+    { name = "dinglehopper", specifier = ">=0.11.0" },
+    { name = "fastapi", specifier = ">=0.110" },
+    { name = "python-multipart", specifier = ">=0.0.9" },
+    { name = "uvicorn", specifier = ">=0.29" },
+]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8" }]
+dev = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pytest", specifier = ">=8" },
+]
 
 [[package]]
 name = "elementpath"
