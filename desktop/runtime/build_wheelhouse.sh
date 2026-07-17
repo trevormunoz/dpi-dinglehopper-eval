@@ -25,7 +25,10 @@ else
 fi
 rm -rf "$TMPVENV"
 PKG="dpi-dinglehopper-eval"
-HASH=$(ls "$OUT" | sort | shasum -a 256 | cut -d' ' -f1)
+# shasum (Perl, macOS/Linux) vs sha256sum (GNU coreutils, Git Bash on Windows).
+if command -v shasum >/dev/null 2>&1; then SHA="shasum -a 256"
+else SHA="sha256sum"; fi
+HASH=$(ls "$OUT" | sort | $SHA | cut -d' ' -f1)
 printf '%s\n%s\n' "$PKG" "$HASH" > "$OUT/MANIFEST"
 if [ "$MODE" = "--probe" ]; then echo probe >> "$OUT/MANIFEST"; fi
 echo "wheelhouse ($MODE): $(ls "$OUT" | wc -l | tr -d ' ') files"
