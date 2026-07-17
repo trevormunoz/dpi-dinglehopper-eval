@@ -33,6 +33,16 @@ def _real_uploads(uploads: list[UploadFile]) -> list[UploadFile]:
     return kept
 
 
+def _collisions(uploads: list[UploadFile]) -> list[str]:
+    """Original paths of uploads whose flattened basenames collide."""
+    by_name: dict[str, list[str]] = {}
+    for upload in uploads:
+        by_name.setdefault(Path(upload.filename).name, []).append(upload.filename)
+    return [
+        path for paths in by_name.values() if len(paths) > 1 for path in paths
+    ]
+
+
 def _save(uploads: list[UploadFile], dest: Path) -> None:
     """Flatten to basenames — pairing.py expects flat directories."""
     dest.mkdir(parents=True, exist_ok=True)
@@ -76,6 +86,37 @@ def create_app(base_dir: Path) -> FastAPI:
     ):
         gt_uploads = _real_uploads(gt_files)
         ocr_uploads = _real_uploads(ocr_files)
+        if not any(
+            Path(u.filename).name.endswith(".gt.txt") for u in gt_uploads
+        ):
+            return HTMLResponse(
+                pages.error_page(
+                    "The ground-truth folder has no .gt.txt files. Each "
+                    "transcription must be named after its OCR file, with "
+                    ".gt.txt in place of the extension — for example "
+                    "page_3.gt.txt grades page_3.xml."
+                ),
+                status_code=400,
+            )
+        if not ocr_uploads:
+            return HTMLResponse(
+                pages.error_page(
+                    "The OCR folder is empty — pick the folder that holds "
+                    "the .hocr, .xml, or .txt files."
+                ),
+                status_code=400,
+            )
+        colliding = _collisions(gt_uploads) + _collisions(ocr_uploads)
+        if colliding:
+            return HTMLResponse(
+                pages.error_page(
+                    "Two or more files would end up with the same name, so "
+                    "grading could silently use the wrong page. Flatten the "
+                    "folder or rename these files, then try again:",
+                    details=tuple(colliding),
+                ),
+                status_code=400,
+            )
         run_dir = _next_run_dir(base_dir)
         _save(gt_uploads, run_dir / "gt")
         _save(ocr_uploads, run_dir / "ocr")
