@@ -132,3 +132,70 @@ generation* into student digitization workflows.
 **Reading.** Generation, not evaluation — adjacent to iiif_ocr's model stack,
 not to dinglehopper. Out of scope for this tool; recorded so the roadmap
 conversation has a home.
+
+## 7. GT line-wrapping inflates CER ~2x — GT-authoring convention (wrapper), possible upstream flag
+
+**Source (2026-07-17).** First real grade of Library of Congress NDNP output
+([ndnp-open-ocr](https://github.com/LibraryOfCongress/ndnp-open-ocr) 1.2.0,
+Tesseract 5.4.1): one article ("More Troops for Gen. Shafter", *N.Y. Daily
+Tribune*, 1898-06-21, ALTO `block_4`–`block_13`), GT transcribed by hand from the
+`0424.jp2` scan, OCR pruned to the same blocks.
+
+**Observation.** dinglehopper's default CER counts every character, **newlines
+included**. GT authored as reflowed paragraphs (one `\n` per paragraph, 17 total)
+graded against ALTO extracted one `\n` per `TextLine` (75 total) is penalized for
+line structure it shares no responsibility for. Both metrics are affected, by
+**different mechanisms**. Measured with dinglehopper's own `character_error_rate`
+/ `word_error_rate` (538 GT words, 3,157 chars):
+
+| Variant | CER | WER |
+|---|---|---|
+| Raw — as graded (pipeline) | 0.0402 | 0.0948 |
+| Whitespace collapsed to single space, both sides | 0.0210 | 0.0948 |
+| **Layout-neutral** (CER: strip all whitespace; WER: token-aware de-wrap) | **0.0199** | **0.0688** |
+
+**~half of both metrics was line-layout, not recognition.** Recognition CER ≈
+2.0%, recognition WER ≈ 6.9%.
+
+- **CER mechanism — newline *characters*.** OCR has 75 newlines to GT's 17; each
+  counts as an edit. Collapsing/stripping whitespace symmetrically removes it.
+- **WER mechanism — word *splitting*.** A word wrapped across a line
+  (`an\nnounced`, `addi\ntiongl`) tokenizes as two OCR words vs one GT word,
+  costing ~2 word-edits each. **14 of the 51 word-edits were this splitting**
+  (8 phantom head-fragment insertions + 6 splits that were otherwise perfect
+  words).
+
+**Correction to an earlier note in this section's history:** WER is *not* "immune
+to line-wrapping." It is immune only to the newline-vs-space swap (that is why the
+whitespace-collapse row leaves WER unchanged — it never rejoins a wrap). Isolating
+recognition WER needs a **token-aware de-wrapper**, not whitespace normalization.
+
+**Not hyphenation.** The OCR text contains **no** end-of-line hyphens (they are
+dropped), so the driver is newline/token structure alone, never hyphen handling.
+
+**The de-wrapper that works.** Merge two OCR fragments across an original line
+boundary iff the merge moves *closer* to a real GT word
+(`min-edit-dist(A+B, GT) < min-edit-dist(A,GT)+min-edit-dist(B,GT)`). This joins
+`addi`+`tiongl` (neither a GT word → closer merged) while leaving `well`+`as`
+(both exact GT words, cannot improve) untouched — the separation a blunt
+`\w\n\w` regex cannot make (that regex glued real words and spiked WER to 0.24;
+discarded). On this article it made exactly 8 merges, all correct, zero false
+merges. It only undoes splits; it never alters characters, so genuine recognition
+errors (`tiongl`, `deflnitely`) survive and stay counted.
+
+**Implications.**
+
+- **Headline metric.** Report **recognition WER** (de-wrapped) as the primary
+  number; treat raw CER/WER as caveated upper bounds unless GT and OCR share line
+  structure. Pairs with the significant-word/proper-noun metric idea (memory:
+  `significant-word-accuracy-metric`) — both say the headline number should
+  reflect use, not flatter.
+- **Wrapper work, not upstream (revised).** The fix lives in this repo (author GT
+  to match line structure, or apply the de-wrapper before scoring), not
+  necessarily in dinglehopper. A dinglehopper `--normalize-whitespace` flag would
+  only address the CER half; the WER half needs the token-aware step.
+
+**Status.** Measurement + throwaway de-wrapper script; no repo code changed yet.
+Repro: `gt/` + `ocr/` under the eval workspace, dinglehopper v0.11.0. Single
+article — needs a second graded page before the ~2x factor and the de-wrapper's
+zero-false-merge behavior are treated as general.
