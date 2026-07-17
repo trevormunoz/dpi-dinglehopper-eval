@@ -1,4 +1,6 @@
+import io
 import json
+import zipfile
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -195,3 +197,43 @@ def test_form_page_carries_instructions_and_shutdown_note(tmp_path):
     assert ".gt.txt" in text
     assert "Close this window" in text
     assert "never leave this computer" in text
+
+
+def test_zip_download_contains_reports(tmp_path):
+    client = make_client(tmp_path)
+    gt, ocr = _fixture_pair()
+    client.post(
+        "/grade",
+        files=[
+            ("gt_files", ("page_0.gt.txt", gt, "text/plain")),
+            ("ocr_files", ("page_0.txt", ocr, "text/plain")),
+        ],
+        follow_redirects=False,
+    )
+    resp = client.get("/runs/run-001/download")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+    archive = zipfile.ZipFile(io.BytesIO(resp.content))
+    names = set(archive.namelist())
+    assert {"summary.json", "summary.html", "page_0.json", "page_0.html"} <= names
+
+
+def test_zip_download_unknown_run_is_404(tmp_path):
+    client = make_client(tmp_path)
+    assert client.get("/runs/run-999/download").status_code == 404
+    assert client.get("/runs/../etc/download").status_code == 404
+
+
+def test_zip_download_without_reports_is_404(tmp_path):
+    client = make_client(tmp_path)
+    gt, ocr = _fixture_pair()
+    # GT stem matches nothing → zero pairs → engine never creates reports/
+    client.post(
+        "/grade",
+        files=[
+            ("gt_files", ("page_9.gt.txt", gt, "text/plain")),
+            ("ocr_files", ("page_0.txt", ocr, "text/plain")),
+        ],
+        follow_redirects=False,
+    )
+    assert client.get("/runs/run-001/download").status_code == 404

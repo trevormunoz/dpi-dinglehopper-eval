@@ -7,10 +7,11 @@ imports dinglehopper.
 import json
 import logging
 import re
+import shutil
 from pathlib import Path
 
 from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from dpi_eval import pages
@@ -169,6 +170,25 @@ def create_app(base_dir: Path) -> FastAPI:
             record["exit_code"],
             summary=summary,
             page_metrics=page_metrics,
+        )
+
+    @app.get("/runs/{run_id}/download")
+    def download(run_id: str):
+        record = _load_result(base_dir, run_id)
+        reports_dir = base_dir / run_id / "reports"
+        if record is None or not reports_dir.is_dir():
+            return HTMLResponse(
+                pages.error_page("No reports for that run."), status_code=404
+            )
+        archive = shutil.make_archive(
+            str(base_dir / run_id / f"dpi-eval-{run_id}-reports"),
+            "zip",
+            root_dir=reports_dir,
+        )
+        return FileResponse(
+            archive,
+            media_type="application/zip",
+            filename=f"dpi-eval-{run_id}-reports.zip",
         )
 
     return app
