@@ -257,3 +257,56 @@ def test_pick_port_prefers_free_port():
         probe.bind(("127.0.0.1", 0))
         free = probe.getsockname()[1]
     assert _pick_port(preferred=free) == free
+
+
+def test_main_no_browser_skips_browser_timer(tmp_path, monkeypatch):
+    import dpi_eval.web as web
+
+    monkeypatch.setattr(web.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(web.uvicorn, "run", lambda *a, **k: None)
+
+    def forbidden_timer(*a, **k):
+        raise AssertionError("browser timer created despite --no-browser")
+
+    monkeypatch.setattr(web.threading, "Timer", forbidden_timer)
+    assert web.main(["--no-browser"]) == 0
+
+
+def test_main_default_still_opens_browser(tmp_path, monkeypatch):
+    import dpi_eval.web as web
+
+    created = {}
+
+    class FakeTimer:
+        def __init__(self, delay, fn, args=None):
+            created["timer"] = True
+
+        def start(self):
+            created["started"] = True
+
+    monkeypatch.setattr(web.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(web.uvicorn, "run", lambda *a, **k: None)
+    monkeypatch.setattr(web.threading, "Timer", FakeTimer)
+    assert web.main([]) == 0
+    assert created == {"timer": True, "started": True}
+
+
+def test_next_run_dir_retries_on_collision(tmp_path, monkeypatch):
+    from dpi_eval.web import _next_run_dir
+
+    base = tmp_path / "runs"
+    base.mkdir()
+    real_mkdir = Path.mkdir
+    state = {"stolen": False}
+
+    def racing_mkdir(self, *args, **kwargs):
+        if not state["stolen"] and self.name == "run-001":
+            state["stolen"] = True
+            real_mkdir(self, *args, **kwargs)  # a rival grader claims run-001
+            raise FileExistsError(str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", racing_mkdir)
+    run_dir = _next_run_dir(base)
+    assert run_dir.name == "run-002"
+    assert run_dir.is_dir()

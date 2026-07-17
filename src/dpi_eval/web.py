@@ -4,6 +4,7 @@ Imports only run_batch from the engine (spec hard constraint); never
 imports dinglehopper.
 """
 
+import argparse
 import json
 import logging
 import re
@@ -58,14 +59,18 @@ def _save(uploads: list[UploadFile], dest: Path) -> None:
 
 
 def _next_run_dir(base_dir: Path) -> Path:
-    highest = 0
-    for existing in base_dir.glob("run-*"):
-        suffix = existing.name[len("run-") :]
-        if suffix.isdigit():
-            highest = max(highest, int(suffix))
-    run_dir = base_dir / f"run-{highest + 1:03d}"
-    run_dir.mkdir(parents=True)
-    return run_dir
+    while True:
+        highest = 0
+        for existing in base_dir.glob("run-*"):
+            suffix = existing.name[len("run-") :]
+            if suffix.isdigit():
+                highest = max(highest, int(suffix))
+        run_dir = base_dir / f"run-{highest + 1:03d}"
+        try:
+            run_dir.mkdir(parents=True)
+        except FileExistsError:
+            continue  # concurrent grader (desktop + CLI share the dir) won this name
+        return run_dir
 
 
 def _load_result(base_dir: Path, run_id: str) -> dict | None:
@@ -212,13 +217,24 @@ def _pick_port(preferred: int = PREFERRED_PORT) -> int:
             return probe.getsockname()[1]
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog="dpi-eval-web")
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="do not open a browser tab (a desktop shell provides the window)",
+    )
+    args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     port = _pick_port()
     url = f"http://{HOST}:{port}"
     app = create_app(Path.home() / "dpi-eval-runs")
-    print(f"dpi-eval-web running at {url}")
-    print("Done? Close the browser tab, then close this window (or press Ctrl+C).")
-    threading.Timer(1.0, webbrowser.open, args=[url]).start()
+    print(f"dpi-eval-web running at {url}", flush=True)
+    print(
+        "Done? Close the browser tab, then close this window (or press Ctrl+C).",
+        flush=True,
+    )
+    if not args.no_browser:
+        threading.Timer(1.0, webbrowser.open, args=[url]).start()
     uvicorn.run(app, host=HOST, port=port, log_level="warning")
     return 0
