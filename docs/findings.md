@@ -124,6 +124,10 @@ for it.
 **Trigger to build.** An HDC pilot is actually scheduled (take Pamela up on
 the workflow tour first).
 
+**Status (2026-07-16).** Built ahead of the pilot as `dpi-eval-web` (spec:
+`docs/superpowers/specs/2026-07-16-dpi-eval-web-design.md`) — localhost
+FastAPI wrapper over `run_batch`, launched by the same uvx mechanism.
+
 ## 6. Alt text generation — separate workstream, log only
 
 **Source.** Pamela McClanahan: eventually incorporate OCR *and alt text
@@ -199,3 +203,44 @@ errors (`tiongl`, `deflnitely`) survive and stay counted.
 Repro: `gt/` + `ocr/` under the eval workspace, dinglehopper v0.11.0. Single
 article — needs a second graded page before the ~2x factor and the de-wrapper's
 zero-false-merge behavior are treated as general.
+
+## 8. dpi-eval-web scope fence — deferred features and their triggers
+
+**Source.** REDUCE-posture brainstorm for `dpi-eval-web` (2026-07-16) and
+its 2026-07-17 accessibility amendment; spec
+`docs/superpowers/specs/2026-07-16-dpi-eval-web-design.md`.
+
+Deferred, each with its trigger to build:
+
+- **GT transcription in the UI** (textarea beside the page image — likely
+  the highest-value candidate). Trigger: an HDC pilot shows that
+  transcribing in a separate editor is the workflow bottleneck.
+- **Progress streaming during long batches.** Trigger: real batches grow
+  well past the 10–20 GT-page sampling size and the synchronous
+  request feels hung.
+- **GitHub Pages instructions site.** Trigger: the form page's inline
+  instructions prove insufficient for student onboarding.
+- **Auth / multi-user.** Trigger: HDC wants a shared always-on instance
+  instead of per-student localhost (would also reopen the hosting and
+  files-leave-machine constraints — a new spec, not an amendment).
+- **Per-page failure detail in the UI.** The results page says a page
+  "failed to grade" but not why; the stderr the runner logs is not kept
+  on `BatchResult`. Trigger: students can't self-serve the reason.
+  Requires a small engine change (carry stderr per failed stem) — its
+  own task, since the web sprint holds engine files untouched.
+- **Layout-neutral scores in the UI.** Blocked on findings §7: the
+  token-aware de-wrapper must hold up beyond one article before the
+  results page shows recognition-only WER/CER beside the raw figures.
+- **Error categories and source-scan view** (accessibility notes P2).
+  Show error *classes* (proper nouns, numbers) rather than only rates;
+  optional page-scan-beside-diff verification view. Trigger: pilot
+  feedback that rates alone don't tell students what to fix. The
+  per-page table grows columns; nothing in the layout precludes this.
+- **Dinglehopper diff color-only audit (upstream-PR candidate).** The
+  served diff HTML likely marks insertions/deletions by color alone
+  (WCAG 1.4.1). Audit it; if it fails, the fix belongs upstream in
+  dinglehopper's report template, not in this wrapper.
+- **Pyodide static-hosted grader** (no local install at all). Contingent,
+  far future: requires dinglehopper to become ocrd-free AND report
+  rendering to decouple from its `cli.py` — see findings #1. Logged so
+  the idea has a home; not a roadmap item.

@@ -33,6 +33,20 @@ Exit code is non-zero when more than `--max-failure-rate` of pages fail
 or when there is nothing to grade. Pages with no matching OCR file are
 logged and skipped.
 
+## Web interface (for HDC student workers)
+
+No terminal skills needed beyond one pinned command:
+
+    uvx --from git+https://github.com/trevormunoz/dpi-dinglehopper-eval dpi-eval-web
+
+A browser tab opens (bookmarkable at http://127.0.0.1:8765 when free).
+Pick your ground-truth folder and your OCR folder, click Run, and read
+the batch summary and per-page reports. Results are saved under
+`dpi-eval-runs` in your home folder; "Download reports (.zip)" packages
+a run for handoff. Files never leave your computer — the page is served
+from localhost only. Done? Close the browser tab and the terminal
+window it came from.
+
 ## Quickstart: you already have OCR files (vendor collections)
 
 1. Your OCR lives in a folder, e.g. `ocr/` with files like `issue-042-p001.xml`
