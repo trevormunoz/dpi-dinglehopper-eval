@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "identifier": "edu.umd.dpi-eval",
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       { "title": "dpi-eval", "width": 900, "height": 700 }
     ],

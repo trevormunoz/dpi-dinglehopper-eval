@@ -796,10 +796,12 @@ dependencies = [
 name = "dpi-eval-desktop"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-single-instance",
+ "windows",
 ]
 
 [[package]]
