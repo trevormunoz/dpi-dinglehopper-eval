@@ -1057,28 +1057,29 @@ Task 4 implements its endpoint — fine within this branch.
 Append to `tests/test_web.py`:
 
 ```python
-def _grade_mixed_batch(client):
-    """page_0 grades cleanly; page_1's OCR is unparseable XML; page_9 has
-    GT but no OCR. Exit code 1 (1 failure / 2 pairs > 0.2 threshold)."""
-    gt, ocr = _fixture_pair()
-    return client.post(
-        "/grade",
-        files=[
-            ("gt_files", ("page_0.gt.txt", gt, "text/plain")),
-            ("gt_files", ("page_1.gt.txt", gt, "text/plain")),
-            ("gt_files", ("page_9.gt.txt", gt, "text/plain")),
-            ("ocr_files", ("page_0.txt", ocr, "text/plain")),
-            ("ocr_files", ("page_1.xml", b"<not-valid-alto", "text/xml")),
-        ],
-        follow_redirects=False,
-    )
-
-
 def test_partial_failure_shows_banner_and_names_pages(tmp_path):
+    """Display-contract test: render a run whose engine verdict recorded
+    one failed and one skipped page. The run dir is written directly
+    because no upload payload can deterministically fail dinglehopper
+    0.11.0 — it falls back to plain-text grading for unrecognized XML
+    (verified 2026-07-17). Engine-level failure behavior is covered in
+    tests/test_batch.py via the directory trick, which uploads cannot
+    reproduce."""
     client = make_client(tmp_path)
-    resp = _grade_mixed_batch(client)
-    assert resp.status_code == 303
-    page = client.get(resp.headers["location"]).text
+    run_dir = tmp_path / "runs" / "run-001"
+    (run_dir / "reports").mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "succeeded": ["page_0"],
+                "failed": ["page_1"],
+                "missing": ["page_9"],
+                "exit_code": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    page = client.get("/runs/run-001").text
     assert "Too many pages failed" in page
     assert "page_1" in page  # failed, named
     assert "could not read" in page  # failure reason in plain language
