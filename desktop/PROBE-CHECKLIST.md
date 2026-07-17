@@ -34,12 +34,15 @@ the Windows installer to the Windows tester directly):
    student could do). Open it; drag **dpi-eval** into your **home**
    `Applications` folder (make `~/Applications` in Finder if it doesn't
    exist). Do NOT use the system `/Applications`.
-2. Double-click the app. Expect macOS to claim the app **"is damaged and
-   can't be opened"** — it isn't; that's how macOS words "unsigned."
+2. Double-click the app. Expect macOS to claim **"Apple could not verify
+   [dpi-eval] is free of malware"** / "is from an unidentified developer"
+   — not the "damaged" dialog (that class is superseded, see note below).
    Screenshot the exact dialog.
 3. Open System Settings → Privacy & Security, scroll to the blocked-app
-   notice, click **Open Anyway**, confirm. (If there is no Open Anyway —
-   MDM may remove it — that's the finding; screenshot, stop.)
+   notice, click **Open Anyway**, confirm. This escape hatch is the
+   expected path for an ad-hoc-signed app; its absence — no Open Anyway
+   entry appears — IS the finding. (MDM may remove it; if so, screenshot,
+   stop.)
 4. On launch: a window saying "Setting up…" should appear, then within a
    minute or so the **Grade OCR against ground truth** form. Time it
    roughly.
@@ -96,6 +99,17 @@ minutes. Please use your normal (non-admin) account throughout.
 ---
 
 ## Pre-flight notes (2026-07-17, from Trevor)
+
+- **2026-07-17** — the first CI artifact was only linker-signed (adhoc,
+  linker-signed; no sealed resources; Info.plist not bound), which on
+  macOS 15 produces the **"is damaged and can't be opened"** dialog with
+  **no Open Anyway escape** — a hard block, not friction. The build now
+  fully ad-hoc-signs the bundle (`signingIdentity: "-"` in
+  `tauri.conf.json`, `codesign --force --deep --sign -` equivalent),
+  which should reclassify Gatekeeper's response as "unidentified
+  developer" WITH the Open Anyway path described in steps 2–3 above.
+  This note supersedes the "damaged" wording used when Part A was first
+  run against that artifact.
 
 - **HDC Mac is Apple Silicon** — the arm64-only artifact is compatible;
   no x86 build needed for Part A.

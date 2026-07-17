@@ -15,6 +15,7 @@
     "active": true,
     "targets": ["dmg", "nsis"],
     "windows": { "nsis": { "installMode": "currentUser" } },
+    "macOS": { "signingIdentity": "-" },
     "resources": { "../runtime/payload/": "runtime/" }
   }
 }
