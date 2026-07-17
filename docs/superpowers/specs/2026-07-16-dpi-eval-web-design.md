@@ -167,3 +167,41 @@ Out, each logged in `docs/findings.md` with its trigger to build:
   instructions (verify against the browsers HDC machines actually run).
 - Zip layout: flat reports only, or include the run's `gt/`/`ocr/` inputs
   for provenance.
+
+## Amendment (2026-07-17): accessible results display
+
+Source: accessibility-sprint notes (the results display is itself an
+accessibility deliverable) plus `docs/findings.md` §7. Supersedes the
+"Results page" description in Components #4 where they differ.
+
+- **Show the scores the engine already produced.** The results route reads
+  `reports/summary.json` (`wer_avg`, `cer_avg`, `num_reports`) and per-page
+  `reports/<stem>.json` (`wer`, `cer`, `n_words`, `n_characters`) and passes
+  parsed dicts to the display layer. Display only — never recompute
+  metrics, never import `dinglehopper.*`. Missing keys degrade to "—".
+- **WER leads; CER is secondary and labelled "raw."** Never collapse to a
+  single "accuracy" figure.
+- **Caveat raw scores per findings §7:** line-layout differences inflate
+  both metrics (roughly half of each measured score was layout, not
+  recognition, on the first real batch) — present raw scores as upper
+  bounds in plain language. Layout-neutral scores are deferred until the
+  findings §7 de-wrapper generalizes beyond one article.
+- **Label diff orientation in text:** left column = ground truth (what the
+  page says), right column = what the OCR produced. Students must not
+  infer which side is truth.
+- **The display itself passes WCAG 2.1 AA:** real `<table>` with
+  `<th scope>`, heading hierarchy and a `<main>` landmark, visible focus
+  (`:focus-visible` outline), no meaning in color alone (verdict boxes
+  carry words), AA contrast, `tabular-nums` on score columns, one-decimal
+  percentage precision throughout, plain-language definitions of WER/CER
+  inline (audience: student workers).
+- **Sample honesty:** show denominators (graded page count, total GT words
+  and characters). Skips and failures are loud, each with a plain-language
+  reason. Per-page stderr detail requires the engine's `BatchResult` to
+  carry it — out of scope here (engine files untouched); logged in
+  findings as a follow-up.
+- **Deferred hooks (log, don't build):** error categories beyond a
+  percentage; source-scan-beside-diff view. The per-page table layout must
+  not preclude adding columns.
+- **Dinglehopper's diff HTML stays served as-is.** If it encodes meaning in
+  color alone, that is an upstream finding to log, not a wrapper patch.

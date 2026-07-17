@@ -465,7 +465,16 @@ git commit -m "feat: pre-flight upload validation with friendly errors"
 
 ---
 
-### Task 3: Real UI — results page verdicts and form-page instructions
+### Task 3: SUPERSEDED — do not execute this version
+
+> **Amended 2026-07-17:** the accessibility-sprint notes amended the spec
+> (see the spec's Amendment section). Execute **"Task 3 (revised)"** near
+> the end of this plan instead. This original section is retained for the
+> record only.
+
+Original text follows.
+
+#### Task 3 (original): Real UI — results page verdicts and form-page instructions
 
 Replace the bare Task 1 HTML with the spec'd UI. Verdict logic: exit 0 → green "Graded N page(s)"; nonzero with nothing succeeded → "Nothing was graded" banner; nonzero with partial success → "Too many pages failed" banner. Failed and missing stems listed by name; links to summary, per-page reports, zip (endpoint lands in Task 4 — the link may 404 until then, which is fine within this branch).
 
@@ -785,7 +794,7 @@ Note: `_load_result` already rejects any `run_id` not matching `run-\d{3,}`, so 
 - [ ] **Step 4: Run the full suite**
 
 Run: `uv run pytest`
-Expected: 34 passed.
+Expected: 35 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -887,7 +896,7 @@ Then run `uv sync` to register the script.
 - [ ] **Step 4: Run the full suite**
 
 Run: `uv run pytest`
-Expected: 36 passed.
+Expected: 37 passed.
 
 - [ ] **Step 5: Manual verification (superpowers:verification-before-completion)**
 
@@ -912,7 +921,8 @@ Mechanical; exact text below. (haiku tier)
 
 **Files:**
 - Modify: `README.md` (insert new section after the "Usage" section, before "Quickstart: you already have OCR files")
-- Modify: `docs/findings.md` (update entry #5 status; append entry #7)
+- Modify: `docs/findings.md` (update entry #5 status; append entry #8 —
+  a parallel session already committed an entry #7 on 2026-07-17)
 
 **Interfaces:** none — prose only.
 
@@ -956,14 +966,15 @@ the workflow tour first).
 FastAPI wrapper over `run_batch`, launched by the same uvx mechanism.
 ```
 
-- [ ] **Step 3: Append findings entry #7**
+- [ ] **Step 3: Append findings entry #8**
 
 Append to `docs/findings.md`:
 
 ```markdown
-## 7. dpi-eval-web scope fence — deferred features and their triggers
+## 8. dpi-eval-web scope fence — deferred features and their triggers
 
-**Source.** REDUCE-posture brainstorm for `dpi-eval-web` (2026-07-16); spec
+**Source.** REDUCE-posture brainstorm for `dpi-eval-web` (2026-07-16) and
+its 2026-07-17 accessibility amendment; spec
 `docs/superpowers/specs/2026-07-16-dpi-eval-web-design.md`.
 
 Deferred, each with its trigger to build:
@@ -979,6 +990,23 @@ Deferred, each with its trigger to build:
 - **Auth / multi-user.** Trigger: HDC wants a shared always-on instance
   instead of per-student localhost (would also reopen the hosting and
   files-leave-machine constraints — a new spec, not an amendment).
+- **Per-page failure detail in the UI.** The results page says a page
+  "failed to grade" but not why; the stderr the runner logs is not kept
+  on `BatchResult`. Trigger: students can't self-serve the reason.
+  Requires a small engine change (carry stderr per failed stem) — its
+  own task, since the web sprint holds engine files untouched.
+- **Layout-neutral scores in the UI.** Blocked on findings §7: the
+  token-aware de-wrapper must hold up beyond one article before the
+  results page shows recognition-only WER/CER beside the raw figures.
+- **Error categories and source-scan view** (accessibility notes P2).
+  Show error *classes* (proper nouns, numbers) rather than only rates;
+  optional page-scan-beside-diff verification view. Trigger: pilot
+  feedback that rates alone don't tell students what to fix. The
+  per-page table grows columns; nothing in the layout precludes this.
+- **Dinglehopper diff color-only audit (upstream-PR candidate).** The
+  served diff HTML likely marks insertions/deletions by color alone
+  (WCAG 1.4.1). Audit it; if it fails, the fix belongs upstream in
+  dinglehopper's report template, not in this wrapper.
 - **Pyodide static-hosted grader** (no local install at all). Contingent,
   far future: requires dinglehopper to become ocrd-free AND report
   rendering to decouple from its `cli.py` — see findings #1. Logged so
@@ -999,9 +1027,402 @@ git commit -m "docs: web UI quickstart and scope-fence findings"
 
 ---
 
+### Task 3 (revised 2026-07-17): Accessible results display and form polish
+
+Supersedes the original Task 3 per the spec's Amendment section. Replace
+the bare Task 1 HTML with the accessible results display: engine-produced
+scores (WER first, raw CER caveated), WCAG 2.1 AA markup, labelled diff
+orientation, loud skips/failures with plain-language reasons, plus the
+form-page instructions and shutdown footer. The zip link renders before
+Task 4 implements its endpoint — fine within this branch.
+
+**Files:**
+- Modify: `src/dpi_eval/pages.py` (replace entire file)
+- Modify: `src/dpi_eval/web.py` (add `_read_json`; expand the `results` route)
+- Test: `tests/test_web.py`
+
+**Interfaces:**
+- Consumes: Task 1's run layout (`base_dir/run-NNN/reports/`), `_load_result`,
+  engine JSON — `summary.json` keys `wer_avg`/`cer_avg`/`num_reports`
+  (use `.get`; degrade missing values to "—"), per-page `<stem>.json` keys
+  `wer`/`cer`/`n_words`/`n_characters`.
+- Produces: `pages.results_page(run_id, succeeded, failed, missing,
+  exit_code, summary=None, page_metrics=None)` (two new optional params);
+  `web._read_json(path: Path) -> dict | None`. Report links unchanged:
+  `/files/{run_id}/reports/{stem}.html`, `.../summary.html`; zip at
+  `/runs/{run_id}/download` (Task 4).
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_web.py`:
+
+```python
+def _grade_mixed_batch(client):
+    """page_0 grades cleanly; page_1's OCR is unparseable XML; page_9 has
+    GT but no OCR. Exit code 1 (1 failure / 2 pairs > 0.2 threshold)."""
+    gt, ocr = _fixture_pair()
+    return client.post(
+        "/grade",
+        files=[
+            ("gt_files", ("page_0.gt.txt", gt, "text/plain")),
+            ("gt_files", ("page_1.gt.txt", gt, "text/plain")),
+            ("gt_files", ("page_9.gt.txt", gt, "text/plain")),
+            ("ocr_files", ("page_0.txt", ocr, "text/plain")),
+            ("ocr_files", ("page_1.xml", b"<not-valid-alto", "text/xml")),
+        ],
+        follow_redirects=False,
+    )
+
+
+def test_partial_failure_shows_banner_and_names_pages(tmp_path):
+    client = make_client(tmp_path)
+    resp = _grade_mixed_batch(client)
+    assert resp.status_code == 303
+    page = client.get(resp.headers["location"]).text
+    assert "Too many pages failed" in page
+    assert "page_1" in page  # failed, named
+    assert "could not read" in page  # failure reason in plain language
+    assert "page_9" in page  # missing OCR, named
+    assert "no file with the same name" in page  # skip reason
+    assert '/files/run-001/reports/page_0.html' in page
+    assert '/files/run-001/reports/summary.html' in page
+
+
+def test_nothing_graded_shows_banner(tmp_path):
+    client = make_client(tmp_path)
+    gt, ocr = _fixture_pair()
+    resp = client.post(
+        "/grade",
+        files=[
+            ("gt_files", ("page_9.gt.txt", gt, "text/plain")),
+            ("ocr_files", ("page_0.txt", ocr, "text/plain")),
+        ],
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    page = client.get(resp.headers["location"]).text
+    assert "Nothing was graded" in page
+
+
+def test_results_show_scores_wer_first_with_caveat(tmp_path):
+    client = make_client(tmp_path)
+    gt, ocr = _fixture_pair()
+    resp = client.post(
+        "/grade",
+        files=[
+            ("gt_files", ("page_0.gt.txt", gt, "text/plain")),
+            ("ocr_files", ("page_0.txt", ocr, "text/plain")),
+        ],
+        follow_redirects=False,
+    )
+    page = client.get(resp.headers["location"]).text
+    assert "Word error rate" in page
+    assert "Raw character error rate" in page
+    # WER leads: its first mention precedes CER's first mention
+    assert page.index("Word error rate") < page.index("Raw character error rate")
+    assert "%" in page
+    assert "upper bound" in page  # findings §7 caveat
+    assert "left column is the ground truth" in page
+    assert "Based on 1 graded page" in page
+    assert '<th scope="col">' in page
+    assert '<th scope="row">' in page
+    assert "<main>" in page
+
+
+def test_form_page_carries_instructions_and_shutdown_note(tmp_path):
+    client = make_client(tmp_path)
+    text = client.get("/").text
+    assert ".gt.txt" in text
+    assert "Close this window" in text
+    assert "never leave this computer" in text
+```
+
+- [ ] **Step 2: Run tests to verify the new ones fail**
+
+Run: `uv run pytest tests/test_web.py -v`
+Expected: the four new tests FAIL (bare pages have none of these strings);
+all earlier tests still pass.
+
+- [ ] **Step 3: Replace pages.py with the accessible UI**
+
+Replace the full contents of `src/dpi_eval/pages.py`:
+
+```python
+"""Self-contained HTML pages for dpi-eval-web.
+
+Pure string builders: no framework imports, no external assets (lab
+machines may be offline; nothing leaves localhost).
+
+Display layer only: metrics arrive parsed from the engine's own JSON
+reports and are formatted here, never recomputed — the engine's numbers
+are the single source of truth.
+"""
+
+from html import escape
+
+_STYLE = """
+  body { font-family: system-ui, sans-serif; max-width: 44rem;
+         margin: 2rem auto; padding: 0 1rem; line-height: 1.5;
+         color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  fieldset { margin: 1rem 0; border: 1px solid #767676;
+             border-radius: 4px; }
+  legend { font-weight: 600; }
+  button { font-size: 1rem; padding: 0.5rem 1.5rem; }
+  a:focus-visible, button:focus-visible, input:focus-visible {
+    outline: 3px solid #1a4a8a; outline-offset: 2px; }
+  .error, .banner { background: #fdecea; border: 1px solid #7a1f12;
+                    padding: 0.5rem 1rem; border-radius: 4px; }
+  .ok { background: #eafaf1; border: 1px solid #1d6f43;
+        padding: 0.5rem 1rem; border-radius: 4px; }
+  .lead { font-size: 1.15rem; }
+  table { border-collapse: collapse; margin: 1rem 0; }
+  caption { text-align: left; font-size: 0.9rem; color: #3d3d3d;
+            padding-bottom: 0.5rem; }
+  th, td { border: 1px solid #767676; padding: 0.35rem 0.6rem;
+           text-align: left; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  .note { font-size: 0.9rem; color: #3d3d3d; }
+  ul.stems { columns: 2; }
+  footer { margin-top: 3rem; color: #3d3d3d; font-size: 0.9rem; }
+"""
+
+
+def _document(title: str, body: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{escape(title)}</title>
+<style>{_STYLE}</style>
+</head>
+<body>
+<main>
+{body}
+</main>
+</body>
+</html>"""
+
+
+def _pct(value) -> str:
+    """Format an engine-reported rate as a one-decimal percentage."""
+    if isinstance(value, (int, float)):
+        return f"{value * 100:.1f}%"
+    return "—"
+
+
+def form_page() -> str:
+    body = """
+<h1>Grade OCR against ground truth</h1>
+<p>Pick the folder with your ground-truth transcriptions
+(<code>&lt;name&gt;.gt.txt</code>, one per sampled page) and the folder
+with the OCR files they grade (<code>&lt;name&gt;.hocr</code>,
+<code>&lt;name&gt;.xml</code>, or <code>&lt;name&gt;.txt</code> — the
+name before the extension must match). Only pages with a ground-truth
+file are graded.</p>
+<form action="/grade" method="post" enctype="multipart/form-data"
+      onsubmit="var b=document.getElementById('run');b.disabled=true;b.textContent='Grading\\u2026';">
+  <fieldset>
+    <legend>Ground-truth folder</legend>
+    <input type="file" name="gt_files" webkitdirectory multiple required>
+  </fieldset>
+  <fieldset>
+    <legend>OCR folder</legend>
+    <input type="file" name="ocr_files" webkitdirectory multiple required>
+  </fieldset>
+  <button id="run" type="submit">Run</button>
+</form>
+<footer>Your files never leave this computer. Results are saved in the
+<code>dpi-eval-runs</code> folder in your home folder.<br>
+Done? Close this window and the terminal window it came from.</footer>
+"""
+    return _document("dpi-eval", body)
+
+
+def _scores_section(
+    run: str,
+    succeeded: list[str],
+    summary: dict,
+    page_metrics: dict[str, dict],
+) -> str:
+    total_words = sum(m.get("n_words") or 0 for m in page_metrics.values())
+    total_chars = sum(
+        m.get("n_characters") or 0 for m in page_metrics.values()
+    )
+    rows = "".join(
+        f'<tr><th scope="row">{escape(stem)}</th>'
+        f'<td class="num">{_pct((page_metrics.get(stem) or {}).get("wer"))}</td>'
+        f'<td class="num">{_pct((page_metrics.get(stem) or {}).get("cer"))}</td>'
+        f'<td class="num">{(page_metrics.get(stem) or {}).get("n_words") or "—"}</td>'
+        f'<td><a href="/files/{run}/reports/{escape(stem)}.html">View diff</a></td>'
+        "</tr>"
+        for stem in succeeded
+    )
+    return (
+        "<h2>Batch scores</h2>"
+        '<p class="lead">Word error rate: '
+        f"<strong>{_pct(summary.get('wer_avg'))}</strong> — the share of "
+        "words that differ from the ground truth. Lower is better.</p>"
+        f"<p>Raw character error rate: {_pct(summary.get('cer_avg'))} — the "
+        "share of characters that differ, line breaks included.</p>"
+        '<p class="note">These are raw scores: differences in line breaks '
+        "count as errors. If you typed your transcription as flowing "
+        "paragraphs, up to about half of a raw score can be layout rather "
+        "than recognition — read raw scores as an upper bound.</p>"
+        f"<p>Based on {len(succeeded)} graded page(s) — {total_words} "
+        f"words, {total_chars} characters of ground truth.</p>"
+        "<p>In each diff, the <strong>left column is the ground "
+        "truth</strong> (what the page says) and the <strong>right column "
+        "is what the OCR produced</strong>.</p>"
+        "<table><caption>Per-page scores. Percentages show how much of "
+        "each page differs from the ground truth.</caption>"
+        '<thead><tr><th scope="col">Page</th>'
+        '<th scope="col">Word error rate</th>'
+        '<th scope="col">Raw character error rate</th>'
+        '<th scope="col">Words</th>'
+        '<th scope="col">Diff</th></tr></thead>'
+        f"<tbody>{rows}</tbody></table>"
+    )
+
+
+def results_page(
+    run_id: str,
+    succeeded: list[str],
+    failed: list[str],
+    missing: list[str],
+    exit_code: int,
+    summary: dict | None = None,
+    page_metrics: dict[str, dict] | None = None,
+) -> str:
+    run = escape(run_id)
+    page_metrics = page_metrics or {}
+    if exit_code == 0:
+        verdict = (
+            f'<div class="ok"><p>Graded {len(succeeded)} page(s).</p></div>'
+        )
+    elif not succeeded:
+        verdict = (
+            '<div class="banner"><p>Nothing was graded. Check that your '
+            "ground-truth files end in <code>.gt.txt</code>, that they "
+            "share names with the OCR files, and that the OCR files open "
+            "correctly.</p></div>"
+        )
+    else:
+        verdict = (
+            f'<div class="banner"><p>Too many pages failed ({len(failed)} '
+            f"of {len(failed) + len(succeeded)}). The results below are "
+            "incomplete — a supervisor should look at this batch.</p></div>"
+        )
+    sections = [f"<h1>Run {run}</h1>", verdict]
+    if succeeded:
+        sections.append(
+            _scores_section(run, succeeded, summary or {}, page_metrics)
+        )
+        sections.append(
+            f'<p><a href="/files/{run}/reports/summary.html">'
+            "<strong>Full batch summary</strong></a> &middot; "
+            f'<a href="/runs/{run}/download">Download reports (.zip)</a></p>'
+        )
+    if failed:
+        items = "".join(f"<li><code>{escape(s)}</code></li>" for s in failed)
+        sections.append(
+            "<h2>Pages that failed to grade</h2>"
+            "<p>The grader could not read these OCR files. Open each one "
+            "to check it isn't empty or damaged, then run again:</p>"
+            f'<ul class="stems">{items}</ul>'
+        )
+    if missing:
+        items = "".join(
+            f"<li><code>{escape(s)}</code></li>" for s in missing
+        )
+        sections.append(
+            "<h2>Skipped: ground truth with no matching OCR file</h2>"
+            "<p>These pages were not graded because the OCR folder had "
+            "no file with the same name ending in <code>.hocr</code>, "
+            "<code>.xml</code>, or <code>.txt</code>:</p>"
+            f'<ul class="stems">{items}</ul>'
+        )
+    sections.append('<p><a href="/">Grade another batch</a></p>')
+    return _document(f"dpi-eval — {run_id}", "\n".join(sections))
+
+
+def error_page(message: str, details: tuple[str, ...] = ()) -> str:
+    items = "".join(f"<li><code>{escape(d)}</code></li>" for d in details)
+    detail_html = f"<ul>{items}</ul>" if items else ""
+    body = (
+        "<h1>Can't grade this batch</h1>"
+        f'<div class="error"><p>{escape(message)}</p>{detail_html}</div>'
+        '<p><a href="/">Back to the form</a></p>'
+    )
+    return _document("dpi-eval — problem", body)
+```
+
+- [ ] **Step 4: Expand the results route**
+
+In `src/dpi_eval/web.py`, add this helper after `_load_result`:
+
+```python
+def _read_json(path: Path) -> dict | None:
+    """Best-effort read of an engine-written JSON report for display."""
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("unreadable report JSON %s", path)
+        return None
+```
+
+Replace the body of the `results` route with:
+
+```python
+    @app.get("/runs/{run_id}", response_class=HTMLResponse)
+    def results(run_id: str):
+        record = _load_result(base_dir, run_id)
+        if record is None:
+            return HTMLResponse(
+                pages.error_page("No such run."), status_code=404
+            )
+        reports_dir = base_dir / run_id / "reports"
+        summary = _read_json(reports_dir / "summary.json")
+        page_metrics = {}
+        for stem in record["succeeded"]:
+            metrics = _read_json(reports_dir / f"{stem}.json")
+            if metrics is not None:
+                page_metrics[stem] = metrics
+        return pages.results_page(
+            run_id,
+            record["succeeded"],
+            record["failed"],
+            record["missing"],
+            record["exit_code"],
+            summary=summary,
+            page_metrics=page_metrics,
+        )
+```
+
+- [ ] **Step 5: Run the full suite**
+
+Run: `uv run pytest`
+Expected: 32 passed. If `test_results_show_scores_wer_first_with_caveat`
+fails on `wer_avg`/`cer_avg`, inspect an actual `summary.json` from a test
+run and report the real key names as a concern rather than renaming keys
+speculatively — `_pct(None)` already degrades to "—", so only the
+assertion on "%" would fail.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/dpi_eval/pages.py src/dpi_eval/web.py tests/test_web.py
+git commit -m "feat: accessible results display — engine scores, WER-first, AA markup"
+```
+
+---
+
 ## Final verification (orchestrator)
 
-- [ ] `uv run pytest` → 36 passed
+- [ ] `uv run pytest` → 37 passed
 - [ ] `git log --oneline main..HEAD` shows the spec commits plus one commit per task
 - [ ] Spec section check: every component (entry point, form, grade, results, static serving, zip) has a shipped route/function and a test
 - [ ] Ship / Show / Ask decision with the user (branch → PR)
