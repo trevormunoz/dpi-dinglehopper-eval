@@ -70,6 +70,17 @@ def _load_result(base_dir: Path, run_id: str) -> dict | None:
     return json.loads(result_file.read_text(encoding="utf-8"))
 
 
+def _read_json(path: Path) -> dict | None:
+    """Best-effort read of an engine-written JSON report for display."""
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("unreadable report JSON %s", path)
+        return None
+
+
 def create_app(base_dir: Path) -> FastAPI:
     base_dir.mkdir(parents=True, exist_ok=True)
     app = FastAPI(title="dpi-eval-web")
@@ -140,13 +151,24 @@ def create_app(base_dir: Path) -> FastAPI:
     def results(run_id: str):
         record = _load_result(base_dir, run_id)
         if record is None:
-            return HTMLResponse(pages.error_page("No such run."), status_code=404)
+            return HTMLResponse(
+                pages.error_page("No such run."), status_code=404
+            )
+        reports_dir = base_dir / run_id / "reports"
+        summary = _read_json(reports_dir / "summary.json")
+        page_metrics = {}
+        for stem in record["succeeded"]:
+            metrics = _read_json(reports_dir / f"{stem}.json")
+            if metrics is not None:
+                page_metrics[stem] = metrics
         return pages.results_page(
             run_id,
             record["succeeded"],
             record["failed"],
             record["missing"],
             record["exit_code"],
+            summary=summary,
+            page_metrics=page_metrics,
         )
 
     return app
