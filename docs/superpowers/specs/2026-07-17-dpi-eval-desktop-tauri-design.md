@@ -252,12 +252,25 @@ built to serve — admin rights and a terminal command. Corrected:
 - **Endpoint security is the honest headline risk:** managed AV/EDR may
   quarantine the unsigned frozen sidecar silently. The managed-machine
   probe exists to surface this before the build, not after.
-- **No auto-updater while unsigned** — updates re-trigger the approval
-  flow; pilot updates are manual downloads from GitHub Releases,
-  versions pinned by tag.
+- **Auto-updater deferred, NOT signing-blocked (corrected 2026-07-17).**
+  The earlier claim that updates "re-trigger the approval flow" was
+  wrong: Gatekeeper's dialog is driven by the quarantine xattr that
+  *browsers* attach to downloads — self-updaters (Sparkle, Tauri's
+  `tauri-plugin-updater`) don't set it, so after the one-time
+  Open Anyway, updater-delivered updates install and launch silently.
+  session-notebook proves the pattern in production (unsigned + Sparkle
+  self-updates). Tauri's updater is cross-platform, backed by a
+  `latest.json` on GitHub Releases, and signed with its own free
+  Ed25519 key — independent of Apple/Microsoft identities. It stays out
+  of this HOLD cycle's scope, but the trigger is pilot demand (manual
+  re-downloads re-run the Gatekeeper dance; the updater would avoid
+  it), not a signing identity. Verify the no-quarantine behavior on our
+  stack when built. Pilot updates meanwhile: manual downloads from
+  GitHub Releases, versions pinned by tag.
 - **Triggers to sign:** probe or pilot friction that blocks students,
   or a UMD Libraries signing identity becoming available. Signing
-  unlocks notarization and the Tauri updater as follow-ons.
+  unlocks notarization (no dialogs at all); the updater does not wait
+  for it.
 - Honest tension, still recorded: even corrected, unsigned first-run
   friction may exceed the uvx terminal command it replaces. The probe
   and pilot measure this; the uvx path stays documented as fallback.
@@ -296,7 +309,8 @@ Same repo, new top-level `desktop/`:
 
 ## Out of scope (HOLD fence)
 
-- Auto-updater (blocked on signing; trigger above)
+- Auto-updater (deferred; unsigned-compatible via Tauri's updater —
+  see corrected distribution note; trigger is pilot update friction)
 - Any new user-facing features beyond the shell (see findings #8)
 - Replacing the web form with native Tauri UI; the webview renders the
   existing pages
