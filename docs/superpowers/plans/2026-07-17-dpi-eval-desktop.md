@@ -448,24 +448,32 @@ rm payload/python.tar.gz
 echo "fetched $VERSION for $TRIPLE"
 ```
 
-`desktop/runtime/build_wheelhouse.sh`:
+`desktop/runtime/build_wheelhouse.sh` (amended after Task 3's finding:
+`dpi_eval.adapter` imports lxml at module scope, so the probe venv needs
+the lxml wheel; downloads are wheels-only — sdists would force compiles
+on student machines; pip is the bundled interpreter's own, so
+fetch_python.sh must run first):
 
 ```bash
 #!/usr/bin/env bash
-# Build the offline wheelhouse. --probe = just this repo's wheel + its web deps,
-# minus dinglehopper (probe sidecar carries no ocrd weight).
+# Build the offline wheelhouse (wheels only). --probe = this repo's wheel +
+# the minimal web deps (fastapi/uvicorn/python-multipart/lxml — lxml because
+# dpi_eval.adapter imports it at module scope), minus dinglehopper.
 set -euo pipefail
 cd "$(dirname "$0")"
 REPO_ROOT="$(cd ../.. && pwd)"
 MODE="${1:-full}"
 OUT="payload/wheelhouse"
+if [ -x payload/cpython/bin/python3 ]; then PY=payload/cpython/bin/python3
+elif [ -x payload/cpython/python.exe ]; then PY=payload/cpython/python.exe
+else echo "run fetch_python.sh first" >&2; exit 1; fi
 rm -rf "$OUT"; mkdir -p "$OUT"
 (cd "$REPO_ROOT" && uv build --wheel --out-dir "$PWD/desktop/runtime/$OUT")
 if [ "$MODE" = "--probe" ]; then
-  uv pip download fastapi uvicorn python-multipart -d "$OUT" >/dev/null
+  "$PY" -m pip download --only-binary :all: fastapi uvicorn python-multipart lxml -d "$OUT" >/dev/null
 else
   (cd "$REPO_ROOT" && uv export --no-dev --no-emit-project --format requirements-txt) > "$OUT/requirements.txt"
-  uv pip download -r "$OUT/requirements.txt" -d "$OUT" >/dev/null
+  "$PY" -m pip download --only-binary :all: -r "$OUT/requirements.txt" -d "$OUT" >/dev/null
 fi
 PKG="dpi-dinglehopper-eval"
 HASH=$(ls "$OUT" | sort | shasum -a 256 | cut -d' ' -f1)
@@ -474,7 +482,7 @@ if [ "$MODE" = "--probe" ]; then echo probe >> "$OUT/MANIFEST"; fi
 echo "wheelhouse ($MODE): $(ls "$OUT" | wc -l | tr -d ' ') files"
 ```
 
-`chmod +x desktop/runtime/*.sh`. (If `uv pip download` is unavailable in the installed uv version, substitute `python -m pip download` from any venv — record which you used.)
+`chmod +x desktop/runtime/*.sh`.
 
 - [ ] **Step 2: Verify locally**
 
@@ -492,7 +500,7 @@ Expected: Python 3.12.8 prints; wheelhouse contains `dpi_dinglehopper_eval-*.whl
 ```bash
 desktop/runtime/payload/cpython/bin/python3 -m venv /tmp/probe-venv
 /tmp/probe-venv/bin/pip install --no-index --find-links desktop/runtime/payload/wheelhouse --no-deps dpi-dinglehopper-eval
-/tmp/probe-venv/bin/pip install --no-index --find-links desktop/runtime/payload/wheelhouse fastapi uvicorn python-multipart
+/tmp/probe-venv/bin/pip install --no-index --find-links desktop/runtime/payload/wheelhouse fastapi uvicorn python-multipart lxml
 /tmp/probe-venv/bin/dpi-eval-web --help
 ```
 
@@ -583,7 +591,7 @@ jobs:
           fi
           "$PY" -m venv probe-venv
           "$BIN/pip" install --no-index --find-links desktop/runtime/payload/wheelhouse --no-deps dpi-dinglehopper-eval
-          "$BIN/pip" install --no-index --find-links desktop/runtime/payload/wheelhouse fastapi uvicorn python-multipart
+          "$BIN/pip" install --no-index --find-links desktop/runtime/payload/wheelhouse fastapi uvicorn python-multipart lxml
           "$BIN/dpi-eval-web" --help
       - name: Install tauri-cli
         run: cargo install tauri-cli --version '^2' --locked
