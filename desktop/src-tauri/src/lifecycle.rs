@@ -347,7 +347,10 @@ pub fn ensure_venv(
     };
     if manifest.probe {
         // Probe payload: project wheel without its heavy deps, plus just
-        // enough of the web stack to serve the UI.
+        // enough of the web stack to serve the UI. lxml is included because
+        // dpi_eval.adapter imports it at module scope (web → runner → adapter),
+        // so the sidecar dies at startup without it; Task 4's wheelhouse
+        // script ships the wheel (plan commit 0b4d06e).
         let mut cmd = Command::new(&py);
         pip_base(&mut cmd);
         cmd.arg("--no-deps").arg(&manifest.package);
@@ -355,7 +358,7 @@ pub fn ensure_venv(
 
         let mut cmd = Command::new(&py);
         pip_base(&mut cmd);
-        cmd.args(["fastapi", "uvicorn", "python-multipart"]);
+        cmd.args(["fastapi", "uvicorn", "python-multipart", "lxml"]);
         run_step("install web deps (probe)", &mut cmd)?;
     } else {
         let mut cmd = Command::new(&py);
