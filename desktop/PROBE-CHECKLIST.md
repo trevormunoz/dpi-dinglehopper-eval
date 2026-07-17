@@ -92,3 +92,17 @@ minutes. Please use your normal (non-admin) account throughout.
   desktop app stops here for that platform; the existing `uvx` command
   path remains the supported route. Either way the result gets a
   findings entry — no result is a wasted test.
+
+---
+
+## Pre-flight notes (2026-07-17, from Trevor)
+
+- **HDC Mac is Apple Silicon** — the arm64-only artifact is compatible;
+  no x86 build needed for Part A.
+- **HDC Macs are not/lightly MDM-managed** — "Open Anyway" should be
+  present, so Part A most likely measures *friction* (dialog scariness),
+  which is exactly the evidence for the signing decision.
+- **Windows endpoint security unknown** — Part B tester: please note
+  whatever the system tray / Windows Security app shows.
+- **Part B runs on a real HDC/UMD-managed Windows machine** — the result
+  counts as the institutional verdict, not just a mechanics check.
