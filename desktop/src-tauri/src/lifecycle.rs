@@ -405,6 +405,33 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 // Spawn
 // ---------------------------------------------------------------------------
 
+/// Directory containing the venv's executables (`bin` on Unix, `Scripts` on
+/// Windows) — the engine invokes `dinglehopper` by bare name via PATH lookup,
+/// so the sidecar needs this directory on its PATH.
+fn venv_bin_dir(venv: &Path) -> PathBuf {
+    #[cfg(unix)]
+    {
+        venv.join("bin")
+    }
+    #[cfg(windows)]
+    {
+        venv.join("Scripts")
+    }
+}
+
+/// Build the PATH env value for the sidecar child: `venv_bin` first, followed
+/// by whatever PATH the app process inherited (if any).
+fn sidecar_path_env(venv_bin: &Path, existing: Option<std::ffi::OsString>) -> std::ffi::OsString {
+    match existing {
+        Some(existing) => {
+            let mut parts = vec![venv_bin.to_path_buf()];
+            parts.extend(std::env::split_paths(&existing));
+            std::env::join_paths(parts).expect("venv bin dir and inherited PATH form a valid PATH")
+        }
+        None => venv_bin.as_os_str().to_os_string(),
+    }
+}
+
 /// Spawn `dpi-eval-web --no-browser` from the venv: stdout piped (sentinel),
 /// stderr appended to the sidecar log, child isolated so [`shutdown`] can kill
 /// its whole tree.
@@ -421,9 +448,14 @@ pub fn spawn_sidecar(venv: &Path, log_path: &Path) -> std::io::Result<Sidecar> {
         .append(true)
         .open(log_path)?;
 
+    // The engine shells out to `dinglehopper` by bare name (PATH lookup), so
+    // the venv's bin dir must be on the child's PATH.
+    let path_env = sidecar_path_env(&venv_bin_dir(venv), std::env::var_os("PATH"));
+
     let mut cmd = Command::new(&exe);
     cmd.arg("--no-browser")
         .env("PYTHONUNBUFFERED", "1")
+        .env("PATH", path_env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::from(log));
@@ -638,6 +670,32 @@ mod tests {
     fn sentinel_ignores_other_lines() {
         assert_eq!(parse_sentinel("Done? Close the browser tab"), None);
         assert_eq!(parse_sentinel(""), None);
+    }
+
+    #[test]
+    fn sidecar_path_env_prepends_venv_bin_before_existing_path() {
+        let venv_bin = PathBuf::from("/fake/venv/bin");
+        let existing = std::ffi::OsString::from("/usr/bin:/bin");
+        let result = sidecar_path_env(&venv_bin, Some(existing));
+
+        let parts: Vec<PathBuf> = std::env::split_paths(&result).collect();
+        assert_eq!(
+            parts,
+            vec![
+                venv_bin.clone(),
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+            ]
+        );
+    }
+
+    #[test]
+    fn sidecar_path_env_handles_missing_existing_path() {
+        let venv_bin = PathBuf::from("/fake/venv/bin");
+        let result = sidecar_path_env(&venv_bin, None);
+
+        let parts: Vec<PathBuf> = std::env::split_paths(&result).collect();
+        assert_eq!(parts, vec![venv_bin]);
     }
 
     #[test]
