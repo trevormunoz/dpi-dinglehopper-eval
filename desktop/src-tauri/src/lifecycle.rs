@@ -33,6 +33,11 @@ const TERM_GRACE: Duration = Duration::from_secs(3);
 /// re-tests point the app at a hand-built venv.
 pub const VENV_OVERRIDE_ENV: &str = "DPI_EVAL_DESKTOP_VENV";
 
+/// Env var carrying the per-launch token into the sidecar. The sidecar
+/// requires it on `/grade-paths` (403 otherwise) and embeds it in the served
+/// form page; absent env ⇒ the endpoint is refused entirely (plain uvx mode).
+pub const TOKEN_ENV: &str = "DPI_EVAL_TOKEN";
+
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested)
 // ---------------------------------------------------------------------------
@@ -50,6 +55,21 @@ pub fn marker_matches(venv: &std::path::Path, hash: &str) -> bool {
 
 pub fn write_marker(venv: &std::path::Path, hash: &str) -> std::io::Result<()> {
     std::fs::write(venv.join(".bootstrap-ok"), hash)
+}
+
+/// The per-launch sidecar token: 16 OS-random bytes rendered as 32 lowercase
+/// hex chars. Generated once per process (via `OnceLock`) so the value is
+/// stable for the whole app session — every sidecar spawn and the served page
+/// see the same token. Source is `getrandom` (OS CSPRNG); a low-entropy source
+/// (e.g. a `SystemTime`+pid hash) would be guessable and defeat the localhost
+/// token guard this exists to provide.
+pub fn session_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| {
+        let mut bytes = [0u8; 16];
+        getrandom::getrandom(&mut bytes).expect("OS RNG available for session token");
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +476,8 @@ pub fn spawn_sidecar(venv: &Path, log_path: &Path) -> std::io::Result<Sidecar> {
     cmd.arg("--no-browser")
         .env("PYTHONUNBUFFERED", "1")
         .env("PATH", path_env)
+        // Per-launch token gating /grade-paths (see TOKEN_ENV).
+        .env(TOKEN_ENV, session_token())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::from(log));
@@ -695,6 +717,20 @@ mod tests {
 
         let parts: Vec<PathBuf> = std::env::split_paths(&result).collect();
         assert_eq!(parts, vec![venv_bin]);
+    }
+
+    #[test]
+    fn session_token_is_32_lowercase_hex_and_stable() {
+        let token = session_token();
+        assert_eq!(token.len(), 32, "token must be 32 hex chars");
+        assert!(
+            token
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "token must be lowercase hex: {token}"
+        );
+        // OnceLock ⇒ the value is stable for the whole process/session.
+        assert_eq!(token, session_token());
     }
 
     #[test]

@@ -6,10 +6,16 @@ edition = "2021"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# tauri floor 2.11.1: GHSA-7gmj-67g7-phm9 / CVE-2026-42184 (origin-confusion
+# IPC bypass on the remote-origin surface this app uses). Lock resolves 2.11.5.
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2.11.1", features = [] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"
+# OS CSPRNG for the per-launch sidecar token (already in the dep tree via
+# transitive deps; used directly here). A guessable source (time+pid hash)
+# would defeat the localhost token guard the token exists to provide.
+getrandom = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -1,0 +1,10 @@
+{
+  "identifier": "remote-dialog",
+  "description": "Grant ONLY the native directory-open dialog to the sidecar-served form page, which loads from a remote loopback origin. local:false scopes the grant to the remote origin so the trusted local ui/index.html is unaffected. The port is a wildcard because _pick_port falls back to an ephemeral port when 8765 is taken, and Tauri's URLPattern parser never auto-wildcards the port (an exact :8765 would silently break the picker; tauri discussion #11622, plugins-workspace #2131). dialog:allow-open only (not dialog:default, which would also grant save/message/ask/confirm); no fs:* is added because the sidecar reads disk itself.",
+  "local": false,
+  "remote": {
+    "urls": ["http://127.0.0.1:*/*"]
+  },
+  "windows": ["main"],
+  "permissions": ["dialog:allow-open"]
+}
