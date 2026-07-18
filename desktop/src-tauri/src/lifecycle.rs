@@ -72,6 +72,41 @@ pub fn session_token() -> &'static str {
     })
 }
 
+/// Pick a non-colliding path for a download in `dir`.
+///
+/// Returns `dir/filename` when nothing there matches `exists`; otherwise
+/// appends `" (1)"`, `" (2)"`, ... before the extension (`report (1).zip`)
+/// until a free name is found. `exists` is injected so the collision check is
+/// pure and testable; production passes `|p| p.exists()`. Mirrors the Finder /
+/// browser "keep both" behaviour instead of overwriting.
+pub fn dedupe_download_path(
+    dir: &Path,
+    filename: &str,
+    exists: impl Fn(&Path) -> bool,
+) -> PathBuf {
+    let first = dir.join(filename);
+    if !exists(&first) {
+        return first;
+    }
+    let name = Path::new(filename);
+    let stem = name
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(filename);
+    let ext = name.extension().and_then(|s| s.to_str());
+    for n in 1u32.. {
+        let candidate = match ext {
+            Some(ext) => format!("{stem} ({n}).{ext}"),
+            None => format!("{stem} ({n})"),
+        };
+        let path = dir.join(candidate);
+        if !exists(&path) {
+            return path;
+        }
+    }
+    unreachable!("u32 counter exhausted while deduplicating {filename}")
+}
+
 // ---------------------------------------------------------------------------
 // Sidecar handle
 // ---------------------------------------------------------------------------
@@ -731,6 +766,33 @@ mod tests {
         );
         // OnceLock ⇒ the value is stable for the whole process/session.
         assert_eq!(token, session_token());
+    }
+
+    #[test]
+    fn dedupe_download_path_suffixes_only_on_collision() {
+        let dir = Path::new("/downloads");
+
+        // No collision → the plain name in the target dir.
+        let free = dedupe_download_path(dir, "report.zip", |_| false);
+        assert_eq!(free, PathBuf::from("/downloads/report.zip"));
+
+        // First name taken → " (1)" before the extension.
+        let taken = [PathBuf::from("/downloads/report.zip")];
+        let one = dedupe_download_path(dir, "report.zip", |p| taken.contains(&p.to_path_buf()));
+        assert_eq!(one, PathBuf::from("/downloads/report (1).zip"));
+
+        // (1) also taken → keep counting.
+        let taken = [
+            PathBuf::from("/downloads/report.zip"),
+            PathBuf::from("/downloads/report (1).zip"),
+        ];
+        let two = dedupe_download_path(dir, "report.zip", |p| taken.contains(&p.to_path_buf()));
+        assert_eq!(two, PathBuf::from("/downloads/report (2).zip"));
+
+        // Extensionless name → suffix with no dot.
+        let taken = [PathBuf::from("/downloads/archive")];
+        let noext = dedupe_download_path(dir, "archive", |p| taken.contains(&p.to_path_buf()));
+        assert_eq!(noext, PathBuf::from("/downloads/archive (1)"));
     }
 
     #[test]
