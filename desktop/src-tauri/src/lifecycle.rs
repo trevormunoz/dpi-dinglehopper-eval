@@ -675,17 +675,16 @@ mod tests {
     #[test]
     fn sidecar_path_env_prepends_venv_bin_before_existing_path() {
         let venv_bin = PathBuf::from("/fake/venv/bin");
-        let existing = std::ffi::OsString::from("/usr/bin:/bin");
+        let inherited = [PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
+        // Build the input with join_paths so the test uses the platform's
+        // PATH separator (':' Unix, ';' Windows) rather than hardcoding ':'.
+        let existing = std::env::join_paths(inherited.iter()).unwrap();
         let result = sidecar_path_env(&venv_bin, Some(existing));
 
         let parts: Vec<PathBuf> = std::env::split_paths(&result).collect();
         assert_eq!(
             parts,
-            vec![
-                venv_bin.clone(),
-                PathBuf::from("/usr/bin"),
-                PathBuf::from("/bin"),
-            ]
+            vec![venv_bin.clone(), inherited[0].clone(), inherited[1].clone()]
         );
     }
 
