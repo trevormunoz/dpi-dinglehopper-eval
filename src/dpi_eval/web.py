@@ -224,7 +224,7 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     def form() -> str:
-        return pages.form_page()
+        return pages.form_page(token=os.environ.get("DPI_EVAL_TOKEN"))
 
     @app.post("/grade")
     def grade(

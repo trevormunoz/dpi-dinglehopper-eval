@@ -38,7 +38,7 @@ _STYLE = """
 """
 
 
-def _document(title: str, body: str) -> str:
+def _document(title: str, body: str, *, extra_head: str = "") -> str:
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -46,7 +46,7 @@ def _document(title: str, body: str) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{escape(title)}</title>
 <style>{_STYLE}</style>
-</head>
+{extra_head}</head>
 <body>
 <main>
 {body}
@@ -62,8 +62,9 @@ def _pct(value) -> str:
     return "—"
 
 
-def form_page() -> str:
-    body = """
+def form_page(*, token: str | None = None) -> str:
+    meta = f'<meta name="dpi-eval-token" content="{escape(token)}">\n' if token else ""
+    body = f"""
 <h1>Grade OCR against ground truth</h1>
 <p>Pick the folder with your ground-truth transcriptions
 (<code>&lt;name&gt;.gt.txt</code>, one per sampled page) and the folder
@@ -71,23 +72,120 @@ with the OCR files they grade (<code>&lt;name&gt;.hocr</code>,
 <code>&lt;name&gt;.xml</code>, or <code>&lt;name&gt;.txt</code> — the
 name before the extension must match). Only pages with a ground-truth
 file are graded.</p>
-<form action="/grade" method="post" enctype="multipart/form-data"
+<div id="dpi-eval-error" class="error" aria-live="polite" tabindex="-1"
+     hidden></div>
+<form id="dpi-eval-form" action="/grade" method="post"
+      enctype="multipart/form-data"
       onsubmit="var b=document.getElementById('run');b.disabled=true;b.textContent='Grading\\u2026';">
-  <fieldset>
+  <fieldset id="gt-fieldset">
     <legend>Ground-truth folder</legend>
-    <input type="file" name="gt_files" webkitdirectory multiple required>
+    <input type="file" id="gt_files" name="gt_files" webkitdirectory
+           multiple required>
+    <button type="button" id="gt-picker-btn" hidden
+            aria-describedby="gt-picker-path">Choose ground-truth
+      folder&hellip;</button>
+    <span id="gt-picker-path" class="note"></span>
   </fieldset>
-  <fieldset>
+  <fieldset id="ocr-fieldset">
     <legend>OCR folder</legend>
-    <input type="file" name="ocr_files" webkitdirectory multiple required>
+    <input type="file" id="ocr_files" name="ocr_files" webkitdirectory
+           multiple required>
+    <button type="button" id="ocr-picker-btn" hidden
+            aria-describedby="ocr-picker-path">Choose OCR
+      folder&hellip;</button>
+    <span id="ocr-picker-path" class="note"></span>
   </fieldset>
   <button id="run" type="submit">Run</button>
 </form>
 <footer>Your files never leave this computer. Results are saved in the
 <code>dpi-eval-runs</code> folder in your home folder.<br>
 Done? Close this window and the terminal window it came from.</footer>
+<script>
+(function () {{
+  window.addEventListener('load', function () {{
+    if (!window.__TAURI__) return;
+    var tokenMeta = document.querySelector('meta[name="dpi-eval-token"]');
+    if (!tokenMeta) return;
+    var token = tokenMeta.content;
+
+    var form = document.getElementById('dpi-eval-form');
+    var runBtn = document.getElementById('run');
+    var errorBox = document.getElementById('dpi-eval-error');
+    var selections = {{gt: null, ocr: null}};
+
+    function showError(message) {{
+      errorBox.textContent = message;
+      errorBox.hidden = false;
+      errorBox.focus();
+    }}
+
+    function clearError() {{
+      errorBox.hidden = true;
+      errorBox.textContent = '';
+    }}
+
+    function wirePicker(kind, inputId, btnId, pathId) {{
+      var input = document.getElementById(inputId);
+      var btn = document.getElementById(btnId);
+      var pathEl = document.getElementById(pathId);
+      input.hidden = true;
+      input.required = false;
+      btn.hidden = false;
+      btn.addEventListener('click', function () {{
+        window.__TAURI__.dialog.open({{directory: true}}).then(
+          function (selected) {{
+            if (!selected) return;
+            selections[kind] = selected;
+            pathEl.textContent = selected;
+          }},
+          function (err) {{
+            showError('Could not open the folder picker: ' + err);
+          }}
+        );
+      }});
+    }}
+
+    wirePicker('gt', 'gt_files', 'gt-picker-btn', 'gt-picker-path');
+    wirePicker('ocr', 'ocr_files', 'ocr-picker-btn', 'ocr-picker-path');
+
+    form.onsubmit = function (evt) {{
+      evt.preventDefault();
+      clearError();
+      if (!selections.gt || !selections.ocr) {{
+        showError('Choose both the ground-truth folder and the OCR folder.');
+        return;
+      }}
+      runBtn.disabled = true;
+      runBtn.textContent = 'Grading\\u2026';
+      form.setAttribute('aria-busy', 'true');
+      fetch('/grade-paths', {{
+        method: 'POST',
+        headers: {{
+          'Content-Type': 'application/json',
+          'X-DPI-Eval-Token': token
+        }},
+        body: JSON.stringify({{gt_dir: selections.gt, ocr_dir: selections.ocr}})
+      }}).then(function (resp) {{
+        return resp.json().then(function (data) {{
+          return {{ok: resp.ok, data: data}};
+        }});
+      }}).then(function (result) {{
+        if (!result.ok) {{
+          throw new Error(result.data.error || 'Grading failed.');
+        }}
+        window.location = result.data.run_url;
+      }}).catch(function (err) {{
+        showError(err.message || String(err));
+        runBtn.disabled = false;
+        runBtn.textContent = 'Run';
+        form.setAttribute('aria-busy', 'false');
+      }});
+    }};
+  }});
+}})();
+</script>
 """
-    return _document("dpi-eval", body)
+    return _document("dpi-eval", body, extra_head=meta)
 
 
 def _scores_section(
