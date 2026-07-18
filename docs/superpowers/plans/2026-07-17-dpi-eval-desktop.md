@@ -676,6 +676,60 @@ git add desktop/runtime/ && git diff --cached --quiet || git commit -m "feat(des
 
 ---
 
+### Task 9b: Native-picker contingency (spec amendment 2026-07-18, approved)
+
+Added mid-cycle: the macOS tracer failed (WKWebView drops the
+webkitdirectory form POST — WebKit-level, no fix in flight). The spec's
+amendment (commit 78e00fe) authorizes native pickers on both desktop
+OSes feeding a `POST /grade-paths` directory-read endpoint. Full
+authorized shape, constraints, and sourced footguns live in the spec
+amendment — implementers read it first. Engine files remain untouchable.
+
+**Pinned cross-component contracts (all three steps build to these):**
+- Env var `DPI_EVAL_TOKEN`: random 32-hex token minted by the shell per
+  launch, passed to the sidecar's environment. Absent env ⇒
+  `/grade-paths` always 403 (uvx mode).
+- Request: `POST /grade-paths`, JSON `{"gt_dir": str, "ocr_dir": str}`,
+  header `X-DPI-Eval-Token` must equal the env token (403 otherwise).
+- Responses: 200 `{"run_url": "/runs/run-NNN"}`; validation/read
+  failures 400 `{"error": str}` (fail loud, never partial); bad/missing
+  token 403.
+- Host guard (app-wide middleware): reject requests whose `Host` is not
+  `127.0.0.1:<bound port>` or `localhost:<bound port>` with 403.
+- Token reaches the page as `<meta name="dpi-eval-token" content="…">`,
+  emitted only when the env token exists.
+- Page detection: probe `window.__TAURI__` inside the `load` handler
+  (never top-level); dialog call `window.__TAURI__.dialog.open({directory: true})`.
+- Capability: `remote.urls: ["http://127.0.0.1:*/*"]`, permission
+  `dialog:allow-open` only.
+
+- [ ] **Step 1 (sonnet, parallel with Step 2) — server endpoint.**
+  Files: `src/dpi_eval/web.py`, `tests/` (new test file ok). TDD.
+  Refactor `/grade`'s validation+save into a shared pipeline both
+  endpoints call (dotfile drop → .gt.txt/empty-OCR checks → collision
+  check → save flat), then `/grade-paths` per contracts: readable-dir
+  checks, files-only recursive enumeration (symlinked files read
+  through, symlinked dirs not followed), token + JSON body, plus the
+  app-wide Host middleware. `uv run pytest` green (40 existing + new).
+- [ ] **Step 2 (opus — version-sensitive Tauri, parallel with Step 1) —
+  shell wiring.** Files: `desktop/src-tauri/` only (Cargo.toml: add
+  `tauri-plugin-dialog`, floor `tauri = "2.11.1"`; tauri.conf.json:
+  `withGlobalTauri: true`; `capabilities/`: remote capability per
+  contract; `lifecycle.rs`: mint token, inject `DPI_EVAL_TOKEN` into
+  sidecar env). Verify mechanism against current Tauri v2 docs, not
+  memory. `cargo test` + `cargo build` clean.
+- [ ] **Step 3 (sonnet, after Steps 1–2 land) — picker variant.**
+  Files: `src/dpi_eval/pages.py` (+ its tests). Feature-detected picker
+  UI per contracts, a11y parity per amendment (`aria-live` errors,
+  focus management, labelled path display, announced Run state).
+  Browser-served page byte-identical when no token/meta present.
+- [ ] **Step 4 (human gate):** re-run the in-window tracer on macOS
+  (Trevor): pick fixtures via native dialogs, expect WER 12.5%,
+  per-page diff, zip. Then quit-mid-grade orphan re-check. Windows
+  probe checklist gains the native-picker step at RC time.
+
+---
+
 ### Task 10: CI to release pipeline
 
 - [ ] **Step 1:** In `.github/workflows/desktop.yml`: switch the payload step to full mode (drop `--probe`); extend the smoke step with the Task 8 Step 2 grade-over-HTTP check (start the venv's `dpi-eval-web --no-browser` in the background, curl `/grade` with the fixtures expecting 303, then kill it); add a `release` job on tag `desktop-v*` attaching both bundles via `softprops/action-gh-release@v2`.
