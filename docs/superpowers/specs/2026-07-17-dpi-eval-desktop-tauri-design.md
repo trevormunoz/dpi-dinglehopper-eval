@@ -177,7 +177,11 @@ set — "additive only" means exactly these, each with tests:
    the current unguarded `mkdir` a real, if rare, race → 500).
 4. **Contingent, only if the WKWebView tracer fails** (below): a native
    folder-picker endpoint. If built, this list and the spec get amended
-   — it is not silently pre-authorized.
+   — it is not silently pre-authorized. **ACTIVATED by amendment
+   2026-07-18** (macOS tracer failed; see the Known-risk section for
+   the verdict and the authorized shape): `POST /grade-paths`
+   directory-read endpoint plus a feature-detected desktop picker
+   variant of the form page.
 
 Existing 37 tests stay green throughout.
 
@@ -213,6 +217,100 @@ build cycle. Contingency if macOS fails: Tauri dialog plugin native
 folder picker feeding a server-side directory-read endpoint (localhost,
 same machine — no privacy change), authorized via an explicit spec
 amendment per the enumerated-changes rule above.
+
+**Amendment 2026-07-18 — tracer failed on macOS; contingency
+activated.** The failure is narrow: the WKWebView folder picker opens
+and selects, but the form-navigation POST carrying `webkitdirectory`
+files never reaches the server — the window resets to the empty form
+and no run dir is created, while the identical multipart POST via curl
+succeeds immediately before and after (server exonerated; the break is
+in WebKit's upload path). Decision (Trevor, 2026-07-18): **native
+pickers on both desktop OSes** — one code path, testable on available
+hardware, no bet on the still-untested WebView2 leg. The browser-served
+form is unchanged; `webkitdirectory` stays for uvx users. Authorized
+shape:
+
+- `web.py` gains `POST /grade-paths` (JSON `{gt_dir, ocr_dir}`): both
+  must exist and be readable directories, else **400 with a JSON error
+  naming the offending path** (fail loud; never a partial grade —
+  a read error mid-enumeration also 400s). Files are enumerated
+  recursively (files only; `rglob` semantics: symlinked files read
+  through, symlinked directories not followed) and flattened into the
+  run dir's `gt/`/`ocr/`, applying **all** of the upload path's rules
+  in the same order: the hidden-file drop (basename starting with `.`
+  — `_real_uploads`' `.DS_Store` filter, reimplemented for paths since
+  the original takes `UploadFile`s), the no-`.gt.txt` and empty-OCR
+  validations, and the collision rule. Then the existing `run_batch`
+  flow — results, per-page diffs, and zip come out identical.
+  **Response contract (fetch can't follow a 303 into a navigation):
+  success returns JSON `{run_url: "/runs/run-NNN"}` and the page sets
+  `window.location`; validation failures return 400 JSON `{error}`
+  rendered inline by the page.** Windows paths travel as ordinary
+  JSON strings (backslashes escaped by `JSON.stringify`, consumed by
+  `pathlib` verbatim).
+- **Desktop detection is feature detection, not a URL flag:** the form
+  page probes `window.__TAURI__` and, when present, swaps the file
+  inputs for "Choose folder…" buttons wired to `tauri-plugin-dialog`
+  (directory mode), showing the chosen paths and submitting JSON to
+  `/grade-paths`. No query param: internal links back to `/` keep
+  working in the shell (a `?shell=desktop` flag would be dropped by
+  "Grade another batch" links and would render dead buttons if a
+  browser user ever reached it), and the shell's navigation code is
+  untouched. Browsers never define `__TAURI__`, so the served form is
+  byte-identical for uvx users and degrades to exactly today's page.
+- Tauri v2 grants the dialog capability to remote content via a
+  capability `remote.urls` entry with a **port wildcard**
+  (`http://127.0.0.1:*/*` URLPattern form — an exact `:8765` origin
+  would fail whenever `_pick_port`'s documented ephemeral fallback
+  fires, e.g. uvx already holding 8765, silently killing the pickers;
+  exact-port patterns may not even validate). Permission is
+  **`dialog:allow-open` only — not `dialog:default`**, which would
+  also grant message/save (the dialog plugin's automatic fs-scope
+  grant on pick is irrelevant here — the sidecar reads disk itself,
+  so no `fs:*` permission is added). `withGlobalTauri` injection into
+  the webview's remote-served page is the mechanism; two sourced
+  footguns bind the implementation: the page probes
+  `window.__TAURI__` on load, never at script top level (init-script
+  ordering has raced page scripts on WebView2 — tauri#12990), and no
+  part of the picker UI may live in an iframe (init scripts don't
+  reach iframes — tauri#13577). **Tauri floor ≥ 2.11.1**
+  (CVE-2026-42184 / GHSA-7gmj-67g7-phm9: origin-confusion IPC bypass
+  on the remote-origin surface this design uses; Cargo.lock currently
+  pins 2.11.5).
+- Security posture, stated honestly: this endpoint turns a path string
+  into a server-side read whose results become HTTP-retrievable (via
+  the `/files` static mount and the results zip). That is acceptable
+  under the app's existing trust model — a single-user localhost tool
+  whose `/grade` already accepts arbitrary POSTs from any local
+  process — but per the community standard for localhost sidecars
+  (Jupyter/VS Code token model; 127.0.0.1 binding alone does not stop
+  other local processes or DNS-rebinding pages), the endpoint is
+  gated: **the shell mints a random per-launch token, passes it to
+  the sidecar via environment, and the sidecar both requires it on
+  `/grade-paths` (header; 403 otherwise — the endpoint is refused
+  entirely when the env token is absent, i.e. under plain uvx) and
+  embeds it in the served form page for the picker variant's use.
+  The server also rejects any request whose `Host` header is not the
+  loopback host:port it bound** (DNS-rebinding guard, applies
+  app-wide, invisible to legitimate localhost use). Standing
+  invariants: 127.0.0.1 bind only; JSON body required on
+  `/grade-paths`; **no CORS middleware is ever added to this app**.
+  No directory confinement is claimed or implemented.
+- Accessibility parity (this sprint's lens): the picker variant must
+  not regress the plain form's built-in affordances — validation and
+  grading errors are announced via an `aria-live` region, keyboard
+  focus lands on the error (or the first actionable control) after a
+  failure, the chosen-path display is programmatically associated
+  with its button (labelled group, not adjacent text), and the
+  Run/"Grading…" state change is exposed to assistive tech, not only
+  visually.
+- Engine files stay untouched; existing web tests stay green; the new
+  endpoint gets its own tests (directory validation incl. unreadable
+  and missing paths, dotfile filtering, collisions, happy path). The
+  dialog→IPC→endpoint *wiring* cannot be exercised by automated tests
+  (native dialogs need a human click) — the re-run in-window tracer is
+  the gate for it, explicitly re-run after this change on macOS and at
+  the Windows probe.
 
 ## Bulletproofing (the HOLD substance)
 
@@ -313,10 +411,36 @@ Same repo, new top-level `desktop/`:
   see corrected distribution note; trigger is pilot update friction)
 - Any new user-facing features beyond the shell (see findings #8)
 - Replacing the web form with native Tauri UI; the webview renders the
-  existing pages
+  existing pages (the 2026-07-18 amendment's native folder *pickers*
+  replace an input mechanism WKWebView broke, not the UI)
 - Linux packaging (no HDC demand)
 
 ## Review record
+
+Amendment PAR 2026-07-18: two blind same-model reviewers on the
+contingency amendment. Both independently found: the pinned-`:8765`
+capability origin breaking on the ephemeral-port fallback, the dotfile
+parity omission, the trust-boundary overclaim, and the
+query-param-gating break (dead buttons in browsers / pickers working
+exactly once past internal links). Singletons kept: the fetch-vs-303
+response contract, `dialog:allow-open` vs `dialog:default` scoping,
+fail-loud error semantics, `rglob` traversal details. All incorporated
+above.
+
+Amendment community research 2026-07-18 (sourced, not from model
+memory): the dominant Tauri sidecar pattern is bundled `frontendDist`
++ fetch — remote-origin webviews like this design are the documented
+but dis-preferred minority ("if in doubt, use the default custom
+protocol"); kept anyway because the product IS a server-rendered app
+and the fence forbids a frontend rewrite. Port-wildcard necessity
+confirmed from Tauri's ACL parsing source (path auto-wildcards, port
+never; discussion #11622, plugins-workspace #2131). The WKWebView
+multipart failure is WebKit-level with no owning Tauri issue and no
+fix in flight (Apple dev forums) — native dialogs are the permanent
+ecosystem answer, not a stopgap. Research added: token+Host gating
+(Jupyter/VS Code standard), Tauri ≥ 2.11.1 floor (GHSA-7gmj-67g7-phm9),
+`__TAURI__` load-timing and no-iframe constraints, and the
+no-`fs:*`-needed simplification. All incorporated above.
 
 PAR 2026-07-17: two blind same-model reviewers, aggregated worst-severity.
 Both independently found: the stdout-buffering handshake break (critical),
@@ -353,7 +477,9 @@ boring-but-more. PyInstaller shapes retained as documented fallbacks.
 - First-run bootstrap duration on real lab hardware (sets the progress
   UI's expectations copy)
 - Whether WKWebView passes the `webkitdirectory` tracer (decides the
-  native-dialog contingency and its spec amendment)
+  native-dialog contingency and its spec amendment) — **resolved
+  2026-07-18: it does not** (picker selects, upload POST never sent);
+  contingency activated by amendment, native pickers both OSes
 - Windows: whether SmartScreen reputation makes NSIS `.exe` per-user
   the least-scary artifact in practice (probe data)
 - (Fallback branch only) exact PyInstaller hook set for the ocrd
