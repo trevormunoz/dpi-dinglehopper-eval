@@ -39,7 +39,10 @@ PKG="dpi-dinglehopper-eval"
 # shasum (Perl, macOS/Linux) vs sha256sum (GNU coreutils, Git Bash on Windows).
 if command -v shasum >/dev/null 2>&1; then SHA="shasum -a 256"
 else SHA="sha256sum"; fi
-HASH=$(ls "$OUT" | sort | $SHA | cut -d' ' -f1)
+# Hash file CONTENTS, not the name listing — a rebuilt wheel keeps its
+# filename (same version), and a name-only hash would leave the marker
+# matching and the venv silently stale.
+HASH=$(cd "$OUT" && ls | LC_ALL=C sort | xargs $SHA | $SHA | cut -d' ' -f1)
 printf '%s\n%s\n' "$PKG" "$HASH" > "$OUT/MANIFEST"
 if [ "$MODE" = "--probe" ]; then echo probe >> "$OUT/MANIFEST"; fi
 echo "wheelhouse ($MODE): $(ls "$OUT" | wc -l | tr -d ' ') files"
