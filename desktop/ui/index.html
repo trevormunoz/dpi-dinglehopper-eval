@@ -1,21 +1,103 @@
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>dpi-eval</title>
-<style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0}</style>
+<style>
+  /* Tokens hand-duplicated from src/dpi_eval/pages.py _STYLE — this shell
+     loads before any server exists and cannot import that stylesheet.
+     Keep these values in sync with pages.py's :root custom properties. */
+  :root {
+    --space-1: .25rem; --space-2: .5rem; --space-3: 1rem; --space-4: 2rem;
+    --fs-small: .875rem; --fs-base: 1rem; --fs-large: 1.25rem; --fs-xl: 2rem;
+    --color-ink: #1a1a1a; --color-muted: #595959; --color-accent: #0b5fff;
+    --color-err: #b42318;
+  }
+  body { font-family: system-ui, sans-serif; display: grid; place-items: center;
+         height: 100vh; margin: 0; color: var(--color-ink); }
+  main { max-width: 26rem; padding: 0 var(--space-3); text-align: center; }
+  h1 { font-size: var(--fs-xl); line-height: 1.15; letter-spacing: -0.01em;
+       margin: 0 0 var(--space-3); }
+  #status { font-size: var(--fs-large); margin: 0 0 var(--space-1); }
+  #status-detail { font-size: var(--fs-small); color: var(--color-muted);
+                    margin: 0; }
+
+  /* Indeterminate shimmer: claims activity, never percent. Static (no
+     highlight sweep) unless the user allows motion. */
+  .shimmer-track { width: 150px; height: 4px; border-radius: 2px;
+                    margin: var(--space-3) auto 0; background: #e5e7eb; }
+  @media (prefers-reduced-motion: no-preference) {
+    .shimmer-track {
+      background: linear-gradient(90deg, #e5e7eb 25%, var(--color-accent) 50%, #e5e7eb 75%);
+      background-size: 200% 100%;
+      animation: shimmer-sweep 1.4s ease-in-out infinite;
+    }
+  }
+  @keyframes shimmer-sweep {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* Friendly failure panel (F2): recovery action first, raw detail demoted. */
+  .notice-err { text-align: left; padding: var(--space-2) var(--space-3);
+                border: 1px solid var(--color-err);
+                border-left: 6px solid var(--color-err); border-radius: 4px;
+                background: #fdeeec; color: #7f1d15; }
+  .notice-err h2 { font-size: var(--fs-base); margin: 0 0 var(--space-1); }
+  .notice-err p { margin: 0 0 var(--space-2); }
+  .notice-err .detail { font-family: ui-monospace, monospace;
+                         font-size: var(--fs-small); color: var(--color-muted);
+                         margin: 0; word-break: break-word; }
+
+  [hidden] { display: none; }
+</style>
 </head>
-<body><main><h1>dpi-eval</h1><p id="status" role="status">Setting up…</p></main>
+<body>
+<main>
+  <h1>dpi-eval</h1>
+  <div id="bootstrap">
+    <p id="status" role="status">Setting up for first use…</p>
+    <p id="status-detail">Installing the grading engine. Usually quick; occasionally a few minutes on a fresh machine.</p>
+    <div id="shimmer" class="shimmer-track" aria-hidden="true"></div>
+    <div id="error-panel" class="notice-err" role="alert" hidden>
+      <h2>Setup didn't finish</h2>
+      <p>Close the app and open it again. If this happens twice, show this screen to library staff.</p>
+      <p class="detail">detail: <span id="error-detail"></span></p>
+    </div>
+  </div>
+</main>
 <script>
   (function () {
     var status = document.getElementById('status');
+    var detail = document.getElementById('status-detail');
+    var shimmer = document.getElementById('shimmer');
+    var errorPanel = document.getElementById('error-panel');
+    var errorDetail = document.getElementById('error-detail');
     var friendly = {
-      installing: 'Installing components… (first run only, about a minute)',
+      installing: 'Setting up for first use…',
       ready: 'Starting…'
     };
+
+    function render(payload) {
+      var isFailed = payload.indexOf('failed:') === 0 || payload.indexOf('failed') === 0;
+      if (isFailed) {
+        status.hidden = true;
+        detail.hidden = true;
+        shimmer.hidden = true;
+        errorDetail.textContent = payload;
+        errorPanel.hidden = false;
+        return;
+      }
+      errorPanel.hidden = true;
+      status.hidden = false;
+      status.textContent = friendly[payload] || payload;
+      var installing = payload === 'installing';
+      detail.hidden = !installing;
+      shimmer.hidden = !installing;
+    }
+
     var tauri = window.__TAURI__;
     if (tauri && tauri.event && tauri.event.listen) {
       tauri.event.listen('bootstrap-status', function (e) {
-        var payload = String(e.payload);
-        status.textContent = friendly[payload] || payload;
+        render(String(e.payload));
       });
     }
   })();
