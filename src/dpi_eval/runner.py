@@ -16,7 +16,7 @@ def run_page(gt: Path, ocr: Path, reports_dir: Path, prefix: str) -> Path:
     """Grade one OCR file against one GT file. Returns path to the JSON report."""
     reports_dir.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["dinglehopper", str(gt), str(ocr), prefix, str(reports_dir)],
+        ["dinglehopper", gt.as_posix(), ocr.as_posix(), prefix, str(reports_dir)],
         check=True,
         capture_output=True,
         text=True,
