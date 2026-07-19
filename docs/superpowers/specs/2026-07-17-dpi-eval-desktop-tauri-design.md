@@ -165,7 +165,8 @@ activates.
 ## Changes to the Python package (enumerated and closed)
 
 All in the web layer; engine files (`runner.py`, `cli.py`,
-`pairing.py`, `adapter.py`) remain untouched. This list is the complete
+`pairing.py`, `adapter.py`) remain untouched — one narrow exception,
+item 5 below, added by amendment 2026-07-19. This list is the complete
 set — "additive only" means exactly these, each with tests:
 
 1. `main()` gains a `--no-browser` flag (the shell IS the browser);
@@ -182,6 +183,25 @@ set — "additive only" means exactly these, each with tests:
    the verdict and the authorized shape): `POST /grade-paths`
    directory-read endpoint plus a feature-detected desktop picker
    variant of the form page.
+
+5. **Amendment 2026-07-19 — engine fence, narrow exception (approved
+   by Trevor).** `run_page` in `runner.py` passes `gt.as_posix()` /
+   `ocr.as_posix()` (instead of `str()`) as the two path arguments to
+   the `dinglehopper` subprocess. Root cause being fixed: dinglehopper's
+   `report.json.j2` interpolates these two paths into its JSON report
+   unescaped (`"gt": "{{ gt }}"`), so any backslash-bearing path —
+   every real Windows absolute path — produces invalid JSON;
+   `dinglehopper-summarize` then crashes on `json.load` (exit 1 →
+   unhandled 500 in `/grade`). Forward-slash paths are valid on Windows
+   for process spawning and Python file APIs, and render as valid JSON.
+   Scope: exactly these two argument expressions in `run_page`; no
+   other engine line changes; test pins the argv strings backslash-free.
+   Upstream bug (qurator-spk/dinglehopper, present through 0.11.0 and
+   master, no existing issue): draft report in
+   `docs/upstream/dinglehopper-report-json-escape.md` for Trevor to
+   file. PAR waived: the amendment records a decision Trevor made
+   directly with the root-cause evidence in front of him (diag-v2
+   replay, CI run 29691628333).
 
 Existing 37 tests stay green throughout.
 
