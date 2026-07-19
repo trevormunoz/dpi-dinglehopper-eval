@@ -465,9 +465,10 @@ def results_page(
             _scores_section(run, succeeded, summary, page_metrics)
         )
         sections.append(
-            f'<p class="section"><a href="/runs/{run}/reports/summary">'
-            "<strong>Full batch summary</strong></a> &middot; "
-            f'<a href="/runs/{run}/download">Download reports (.zip)</a></p>'
+            f'<p class="note section"><a href="/runs/{run}/reports/summary">'
+            "Full technical report</a> &middot; "
+            f'<a href="/runs/{run}/download">Download reports (.zip)</a>'
+            " — the zip goes to your Downloads folder.</p>"
         )
     if failed:
         items = "".join(f"<li><code>{escape(s)}</code></li>" for s in failed)
@@ -488,14 +489,20 @@ def results_page(
             "<code>.xml</code>, or <code>.txt</code>:</p>"
             f'<ul class="stems">{items}</ul>'
         )
-    sections.append('<p class="section"><a href="/">Grade another batch</a></p>')
+    # F16: nothing was graded in the zero-success state, so the exit link
+    # must not claim grading happened.
+    exit_text = "Grade another batch" if succeeded else "Back to the form"
+    sections.append(f'<p class="section"><a href="/">{exit_text}</a></p>')
     return _document(f"dpi-eval — {run_id}", "\n".join(sections))
 
 
 def report_page(run_id: str, name: str, inner_html: str) -> str:
+    run = escape(run_id)
     body = (
-        f"<h1>Report: {escape(name)} — {escape(run_id)}</h1>"
-        f'<p class="note"><a href="/runs/{escape(run_id)}">Back to results</a></p>'
+        # GOV.UK back-link convention: the back link sits above the H1.
+        f'<p class="note"><a href="/runs/{run}">Back to results</a></p>'
+        f"<h1>Technical report: {escape(name)}</h1>"
+        f'<p class="note">Run <code>{run}</code></p>'
         f'<div class="section">{inner_html}</div>'
     )
     return _document(f"dpi-eval — {name}", body)

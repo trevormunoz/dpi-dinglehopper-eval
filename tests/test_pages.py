@@ -262,3 +262,90 @@ def test_every_script_referenced_id_exists_in_markup():
     # meta the script reads by attribute selector must also exist.
     for name in re.findall(r'meta\[name="([^"]+)"\]', script):
         assert f'name="{name}"' in page
+
+
+def _graded_results_page(**overrides):
+    kwargs = dict(
+        run_id="run-001",
+        succeeded=["page_0"],
+        failed=[],
+        missing=[],
+        exit_code=0,
+        summary={"wer_avg": 0.05, "cer_avg": 0.02},
+        page_metrics={"page_0": {"wer": 0.05, "cer": 0.02, "n_words": 16}},
+    )
+    kwargs.update(overrides)
+    return pages.results_page(**kwargs)
+
+
+def test_results_zero_success_exit_reads_back_to_the_form():
+    # F16: nothing was graded, so the only exit must not claim grading
+    # happened.
+    page = pages.results_page("run-001", [], [], ["page_0"], 1)
+    assert "Back to the form" in page
+    assert "Grade another batch" not in page
+
+
+def test_results_success_exit_still_reads_grade_another_batch():
+    # Grading did happen here — the F16 relabel is scoped to the
+    # zero-success state only.
+    page = _graded_results_page()
+    assert "Grade another batch" in page
+    assert "Back to the form" not in page
+
+
+def test_results_partial_success_exit_reads_grade_another_batch():
+    # Partial success: some pages were graded, so "nothing was graded"
+    # framing does not apply.
+    page = pages.results_page("run-001", ["page_0"], ["page_1"], [], 1)
+    assert "Grade another batch" in page
+    assert "Back to the form" not in page
+
+
+def test_full_technical_report_link_relabeled_and_deemphasized():
+    # F5: the link drops students into raw decimals — relabel and
+    # de-emphasize so the results page reads as the primary artifact.
+    page = _graded_results_page()
+    assert "Full technical report" in page
+    assert "Full batch summary" not in page
+    assert "<strong>Full technical report</strong>" not in page
+    # De-emphasized: the link lives inside a `.note`-styled element, not
+    # bare/bolded prose.
+    link_idx = page.index("Full technical report")
+    tag_start = page.rindex("<p", 0, link_idx)
+    tag = page[tag_start : page.index(">", tag_start)]
+    assert "note" in tag
+
+
+def test_download_link_has_downloads_folder_note():
+    # F18: tell students where the zip lands. Covers both the desktop
+    # app (saves to the OS Downloads folder) and the browser flow
+    # (normal browser download behavior).
+    page = _graded_results_page()
+    assert "Download reports (.zip)" in page
+    assert "Downloads folder" in page
+
+
+def test_report_page_back_link_appears_before_heading():
+    # Review-carry: GOV.UK back-link convention — the back link sits
+    # above the H1, not below it.
+    page = pages.report_page("run-001", "page_0", "<p>DIFF</p>")
+    assert page.index("Back to results") < page.index("<h1")
+
+
+def test_report_page_back_link_still_a_real_anchor_to_the_run():
+    # Test-intent preservation: the Task 5 wrapper guarantee (a real
+    # <a href="/runs/run-001"> back link exists) must survive the move.
+    page = pages.report_page("run-001", "page_0", "<p>DIFF</p>")
+    assert '<a href="/runs/run-001">Back to results</a>' in page
+
+
+def test_report_page_heading_is_friendlier_with_run_id_demoted():
+    # Review-carry: "Report: page_0 — run-001" reads as a raw label;
+    # friendlier heading, run id demoted to the .note caption style
+    # results_page already uses.
+    page = pages.report_page("run-001", "page_0", "<p>DIFF</p>")
+    assert "<h1>Technical report: page_0</h1>" in page
+    assert "Report: page_0 — run-001" not in page
+    note_idx = page.index('class="note"')
+    assert "run-001" in page[note_idx : note_idx + 200]
