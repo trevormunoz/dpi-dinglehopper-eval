@@ -89,6 +89,14 @@ picker-feedback | general | deferred-upstream.
 - Report-page INTERNALS: raw decimals (0.125 vs the app's 12.5%),
   unexplained CER/WER acronyms, 2em headings, full-bleed layout —
   dinglehopper-generated; only the wrapper seam (F4) is in scope.
+- F10 sub-element, per-folder file count (jobify audit, 2026-07-19):
+  `dialog.open` returns only a path string; a client-side count would
+  need filesystem access the capability deliberately withholds, and no
+  named hirer exists for a server-side pre-count. Hiring condition: a
+  pilot user asks "how many pages did it see?" before grading. The
+  confirmation row itself (✓ + folder name + wrapping path) stays in
+  scope — hired by students confirming the right folder (friction
+  area 3, Trevor's walkthrough).
 
 ## Reviewer B's "three cheapest credibility wins" (for cut-line context)
 
