@@ -12,6 +12,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2.11.1", features = [] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"
+# Native "download saved" acknowledgment, fired from Rust (the shell owns UX
+# feedback; the webview is a renderer only). Rust-side calls go through the
+# NotificationExt trait, not IPC, so no capability grant is required.
+tauri-plugin-notification = "2"
 # OS CSPRNG for the per-launch sidecar token (already in the dep tree via
 # transitive deps; used directly here). A guessable source (time+pid hash)
 # would defeat the localhost token guard the token exists to provide.
