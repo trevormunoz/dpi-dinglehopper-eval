@@ -6,8 +6,25 @@ by the desktop shell's feature-detected picker script.
 """
 
 import re
+from pathlib import Path
 
 from dpi_eval import pages
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _extract_body(html: str) -> str:
+    return html.split("<body", 1)[-1].split(">", 1)[-1].rsplit("</body>", 1)[0]
+
+
+def _page_0_body() -> str:
+    html = (FIXTURES / "reports" / "page_0.html").read_text(encoding="utf-8")
+    return _extract_body(html)
+
+
+def _summary_body() -> str:
+    html = (FIXTURES / "reports" / "summary.html").read_text(encoding="utf-8")
+    return _extract_body(html)
 
 
 def test_form_page_without_token_has_no_meta_tag():
@@ -364,3 +381,71 @@ def test_report_page_heading_is_friendlier_with_run_id_demoted():
     assert "Report: page_0 — run-001" not in page
     note_idx = page.index('class="note"')
     assert "run-001" in page[note_idx : note_idx + 200]
+
+
+# --- F20: transform_report_body(), against real fixture reports -----------
+
+
+def test_transform_report_body_strips_cdn_scripts_and_inline_script():
+    body = pages.transform_report_body(_page_0_body())
+    assert "<script" not in body
+    assert "jquery" not in body
+    assert "popper" not in body
+    assert "bootstrap" not in body
+    assert "find_diff_class" not in body  # the inline script's own body
+
+
+def test_transform_report_body_preserves_non_script_content():
+    body = pages.transform_report_body(_page_0_body())
+    assert "<h2>Character differences</h2>" in body
+    assert "The quick bro" in body
+    assert 'data-toggle="tooltip"' in body  # native tooltips still work
+
+
+def test_transform_report_body_rewrites_page_metrics_to_percentages():
+    body = pages.transform_report_body(_page_0_body())
+    assert "<p>Character error rate (CER): 3.5%</p>" in body
+    assert "<p>Word error rate (WER): 12.5%</p>" in body
+    assert "<p>CER: 0.0345</p>" not in body
+    assert "<p>WER: 0.125</p>" not in body
+
+
+def test_transform_report_body_rewrites_summary_average_metrics():
+    body = pages.transform_report_body(_summary_body())
+    assert "3.5%" in body
+    assert "12.5%" in body
+    assert "Average CER: 0.0345" not in body
+    assert "Average WER: 0.125" not in body
+
+
+def test_transform_report_body_injects_legend_immediately_after_metrics():
+    body = pages.transform_report_body(_page_0_body())
+    legend = (
+        "CER counts character-level differences; WER counts word-level "
+        "differences. Lower is better. The percentages here are this "
+        "page's raw scores."
+    )
+    assert f'<p class="note">{legend}</p>' in body
+    wer_idx = body.index("Word error rate (WER)")
+    legend_idx = body.index(legend)
+    heading_idx = body.index("<h2>Character differences</h2>")
+    assert wer_idx < legend_idx < heading_idx
+
+
+def test_transform_report_body_labels_diff_columns_ground_truth_and_ocr():
+    body = pages.transform_report_body(_page_0_body())
+    # one header per differences section (Character differences, Word
+    # differences) — not one per .row.
+    assert body.count("Ground truth") == 2
+    assert body.count(">OCR<") == 2
+    char_h2 = body.index("Character differences")
+    char_header = body.index("Ground truth")
+    char_row = body.index('<div class="row">')
+    assert char_h2 < char_header < char_row
+
+
+def test_transform_report_body_does_not_touch_fixture_file_on_disk():
+    path = FIXTURES / "reports" / "page_0.html"
+    before = path.read_bytes()
+    pages.transform_report_body(_extract_body(before.decode("utf-8")))
+    assert path.read_bytes() == before

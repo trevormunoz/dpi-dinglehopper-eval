@@ -8,6 +8,7 @@ reports and are formatted here, never recomputed — the engine's numbers
 are the single source of truth.
 """
 
+import re
 from html import escape
 
 _STYLE = """
@@ -121,6 +122,23 @@ _STYLE = """
   @media (prefers-reduced-motion: reduce) {
     fieldset, form.is-grading { transition: none; }
   }
+
+  /* Wrapped dinglehopper report body (F20): the report's own grid
+     classes, styled here because body extraction already dropped its
+     Bootstrap CSS and the columns rendered stacked. Scoped under
+     .section so it only touches the report body, not the rest of the
+     shell (.section is also used as a generic wrapper elsewhere). */
+  .section .row { display: grid; grid-template-columns: 1fr 1fr;
+                  gap: var(--space-3); margin: 0 0 var(--space-3); }
+  .section .row.diff-header { font-weight: 600; font-size: var(--fs-small);
+                              color: var(--color-muted); margin-bottom: 0; }
+  .section .col-md-6 { padding: var(--space-2); border-radius: 4px; }
+  .section .gt { background: #eef7f0; }
+  .section .ocr { background: #fdf6e7; }
+  .section .diff { background: #fff3b0; text-decoration: underline;
+                   text-decoration-thickness: 2px; }
+  .section h2 { font-size: var(--fs-large);
+                margin: var(--space-4) 0 var(--space-2); }
 """
 
 
@@ -494,6 +512,74 @@ def results_page(
     exit_text = "Grade another batch" if succeeded else "Back to the form"
     sections.append(f'<p class="section"><a href="/">{exit_text}</a></p>')
     return _document(f"dpi-eval — {run_id}", "\n".join(sections))
+
+
+# --- F20: serve-time transform of wrapped report bodies -------------------
+# The exact, closed transform list authorized by the 2026-07-19 spec
+# amendment. Pure function of the extracted body string; the report file
+# on disk is never touched — wrapped_report() calls this in-memory only.
+
+_SCRIPT_TAG = re.compile(r"<script\b[^>]*>.*?</script>", re.S | re.I)
+_LINK_TAG = re.compile(r"<link\b[^>]*/?>", re.I)
+
+_METRIC_LINE = re.compile(
+    r"<p>(?P<avg>Average )?(?P<kind>CER|WER): (?P<value>\d+(?:\.\d+)?)</p>"
+)
+_METRIC_BLOCK = re.compile(
+    r"(?:[ \t]*" + _METRIC_LINE.pattern + r"[ \t]*\n?)+"
+)
+_METRIC_LABELS = {
+    "CER": "Character error rate (CER)",
+    "WER": "Word error rate (WER)",
+}
+_METRIC_LEGEND = (
+    '<p class="note">CER counts character-level differences; WER counts '
+    "word-level differences. Lower is better. The percentages here are "
+    "this page's raw scores.</p>"
+)
+
+_SECTION_HEADER_ROW = re.compile(r'(<h2>[^<]*</h2>\s*)(<div class="row">)')
+_DIFF_HEADER = (
+    '<div class="row diff-header"><div class="col-md-6">Ground truth</div>'
+    '<div class="col-md-6">OCR</div></div>'
+)
+
+
+def _format_metric_line(match: re.Match) -> str:
+    label = _METRIC_LABELS[match.group("kind")]
+    if match.group("avg"):
+        label = f"Average {label[0].lower()}{label[1:]}"
+    pct = float(match.group("value")) * 100
+    return f"<p>{label}: {pct:.1f}%</p>"
+
+
+def _replace_metric_block(match: re.Match) -> str:
+    transformed = _METRIC_LINE.sub(_format_metric_line, match.group(0))
+    return transformed.rstrip() + "\n" + _METRIC_LEGEND + "\n"
+
+
+def _inject_diff_header(match: re.Match) -> str:
+    return f"{match.group(1)}{_DIFF_HEADER}\n{match.group(2)}"
+
+
+def transform_report_body(inner_html: str) -> str:
+    """Reshape an extracted dinglehopper report body for the wrapped
+    shell (F20). Exactly the amendment's list, in order:
+
+    1. Strip CDN <script src>, inline <script>, and any <link> tags —
+       the line tooltips already work via native title attributes.
+    2. Rewrite bare/Average CER|WER decimal lines to one-decimal
+       percentages.
+    3. Inject a one-line CER/WER legend right after those lines.
+    4. Label the diff columns Ground truth / OCR at the table itself.
+
+    (5, the shell CSS for the report's own classes, lives in _STYLE.)
+    """
+    html = _SCRIPT_TAG.sub("", inner_html)
+    html = _LINK_TAG.sub("", html)
+    html = _METRIC_BLOCK.sub(_replace_metric_block, html)
+    html = _SECTION_HEADER_ROW.sub(_inject_diff_header, html)
+    return html
 
 
 def report_page(run_id: str, name: str, inner_html: str) -> str:

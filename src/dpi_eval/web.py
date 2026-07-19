@@ -352,6 +352,7 @@ def create_app(
             if "<body" in html
             else html
         )
+        body = pages.transform_report_body(body)
         return pages.report_page(run_id, name, body)
 
     @app.get("/runs/{run_id}/download")

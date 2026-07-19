@@ -305,6 +305,38 @@ def test_wrapped_report_serves_generated_html_in_shell(tmp_path):
     assert "--color-ink" in resp.text  # our stylesheet wraps it
 
 
+def test_wrapped_report_transforms_real_fixture_and_leaves_it_on_disk(tmp_path):
+    # F20: serve-time transform, exercised against a real generated
+    # report (not fabricated HTML) — proves the disk file is untouched.
+    client = make_client(tmp_path)
+    run = tmp_path / "runs" / "run-001"
+    (run / "reports").mkdir(parents=True)
+    (run / "result.json").write_text(
+        '{"succeeded": ["page_0"], "failed": [], "missing": [], "exit_code": 0}'
+    )
+    fixture_html = (FIXTURES / "reports" / "page_0.html").read_text(
+        encoding="utf-8"
+    )
+    report_path = run / "reports" / "page_0.html"
+    report_path.write_text(fixture_html, encoding="utf-8")
+
+    resp = client.get("/runs/run-001/reports/page_0")
+    assert resp.status_code == 200
+    assert "<script" not in resp.text
+    assert "jquery" not in resp.text
+    assert "Character error rate (CER): 3.5%" in resp.text
+    assert "Word error rate (WER): 12.5%" in resp.text
+    assert "<p>CER: 0.0345</p>" not in resp.text
+    assert "Ground truth" in resp.text
+    assert ">OCR<" in resp.text
+    assert "CER counts character-level differences" in resp.text
+    assert 'href="/runs/run-001"' in resp.text  # shell back-link survives
+
+    # The report file on disk is never modified — transform is in-memory
+    # only; the zip download still ships the raw original.
+    assert report_path.read_text(encoding="utf-8") == fixture_html
+
+
 def test_wrapped_report_rejects_bad_names(tmp_path):
     client = make_client(tmp_path)
     assert client.get("/runs/run-001/reports/../secret").status_code in (400, 404)
