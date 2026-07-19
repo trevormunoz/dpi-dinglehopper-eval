@@ -130,11 +130,13 @@ jobs:
           # /grade 303s even when every page FAILS to grade (per-page
           # failures land in result.json and the results page), so the
           # redirect alone proves nothing — follow it and assert the
-          # success banner ("Graded 1 page(s).", rendered only when
-          # exit_code == 0) and the absence of the failure section
-          # ("Pages that failed to grade").
+          # success marker and the absence of the failure section
+          # ("Pages that failed to grade"). Contract with pages.py
+          # results_page: the verdict block (class="verdict") renders
+          # only when exit_code == 0; the stylesheet's .verdict selector
+          # cannot false-match this fixed-string grep.
           BODY=$(curl -s "$REDIRECT_URL")
-          if ! printf '%s' "$BODY" | grep -qF "Graded 1 page(s)." \
+          if ! printf '%s' "$BODY" | grep -qF 'class="verdict"' \
              || printf '%s' "$BODY" | grep -qF "Pages that failed to grade"; then
             echo "results page does not show a clean graded run:" >&2
             printf '%s\n' "$BODY" >&2
