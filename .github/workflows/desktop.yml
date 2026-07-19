@@ -57,6 +57,12 @@ jobs:
           "$PY" -m venv smoke-venv
           "$BIN/pip" install --no-index --find-links desktop/runtime/payload/wheelhouse dpi-dinglehopper-eval
 
+          # The engine invokes `dinglehopper` by bare name (PATH lookup) —
+          # same trap the desktop shell fixed in its sidecar spawn. Without
+          # this the grade 303s but every page fails with [Errno 2]/[WinError 2]
+          # and the graded-result assertion below (correctly) fails the job.
+          export PATH="$PWD/$BIN:$PATH"
+
           LOG=server.log
           "$BIN/dpi-eval-web" --no-browser >"$LOG" 2>&1 &
           SERVER_PID=$!
