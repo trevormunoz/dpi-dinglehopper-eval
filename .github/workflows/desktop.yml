@@ -145,6 +145,43 @@ jobs:
 
           echo "grade smoke test OK ($STATUS, graded 1 page)"
           kill "$SERVER_PID" 2>/dev/null || true
+      # TEMPORARY DIAGNOSTIC v2 (Windows summarize exit 1, runs 29689842118 and
+      # 29690929460): v1 refuted the piped-cp1252 hypothesis — on Windows both
+      # bash-direct and bash-piped summarize pass, yet runner.summarize()
+      # (Python parent, capture_output=True, real run dir under $USERPROFILE)
+      # still exits 1 with PYTHONUTF8=1 set. check=True swallows the child's
+      # captured stderr, so the actual traceback has never been seen. Replay
+      # the exact failing call against the leftover run dir and print stderr.
+      # Remove alongside the v1 block once the root cause is understood.
+      - name: Windows summarize diagnostic (TEMPORARY)
+        if: failure() && runner.os == 'Windows'
+        shell: python
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          import os, pathlib, subprocess
+          scripts = pathlib.Path("smoke-venv/Scripts").resolve()
+          os.environ["PATH"] = str(scripts) + os.pathsep + os.environ["PATH"]
+          runs = pathlib.Path(os.environ["USERPROFILE"]) / "dpi-eval-runs"
+          if not runs.exists():
+              print("no runs dir at", runs, "- failure happened before any grade")
+          for run_dir in sorted(runs.glob("run-*")):
+              print("=== run dir:", run_dir)
+              for p in sorted(run_dir.rglob("*")):
+                  detail = p.stat().st_size if p.is_file() else "<dir>"
+                  print("   ", p.relative_to(run_dir), detail)
+              reports = run_dir / "reports"
+              if not reports.is_dir():
+                  print("    (no reports dir)")
+                  continue
+              r = subprocess.run(
+                  ["dinglehopper-summarize", str(reports)],
+                  capture_output=True,
+                  text=True,
+              )
+              print("replay rc:", r.returncode)
+              print("replay stdout:", r.stdout[-2000:])
+              print("replay stderr:", r.stderr[-2000:])
       - name: Install tauri-cli
         run: cargo install tauri-cli --version '^2' --locked
       - name: Bundle

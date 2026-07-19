@@ -89,3 +89,21 @@ def test_form_page_default_call_signature_unchanged_for_existing_callers():
     # Existing callers (e.g. web.py before this change) call
     # form_page() with no args — must keep working.
     assert isinstance(pages.form_page(), str)
+
+
+def test_results_page_leads_with_verdict_score():
+    page = pages.results_page(
+        "run-001", ["page_0"], [], [], 0,
+        summary={"wer_avg": 0.125, "cer_avg": 0.034,
+                 "n_words_gt": 16, "n_characters_gt": 87},
+        page_metrics={"page_0": {"wer": 0.125, "cer": 0.034, "n_words": 16}},
+    )
+    # Verdict-first: the score element appears before the explanatory prose.
+    assert page.index('class="verdict"') < page.index("share of words")
+    assert "12.5%" in page
+
+
+def test_style_defines_design_tokens():
+    page = pages.form_page()
+    for token in ("--space-1", "--fs-base", "--color-ink"):
+        assert token in page

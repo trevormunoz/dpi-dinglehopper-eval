@@ -11,30 +11,91 @@ are the single source of truth.
 from html import escape
 
 _STYLE = """
+  :root {
+    --space-1: .25rem; --space-2: .5rem; --space-3: 1rem; --space-4: 2rem;
+    --fs-small: .875rem; --fs-base: 1rem; --fs-large: 1.25rem; --fs-xl: 2rem;
+    --color-ink: #1a1a1a; --color-muted: #595959; --color-accent: #0b5fff;
+    --color-ok: #1a7f37; --color-warn: #9a6700; --color-err: #b42318;
+  }
   body { font-family: system-ui, sans-serif; max-width: 44rem;
-         margin: 2rem auto; padding: 0 1rem; line-height: 1.5;
-         color: #1a1a1a; }
-  h1 { font-size: 1.4rem; }
-  fieldset { margin: 1rem 0; border: 1px solid #767676;
+         margin: var(--space-4) auto; padding: 0 var(--space-3);
+         line-height: 1.5; color: var(--color-ink); }
+  /* Explicit type scale: h1 > h2 > h3 (was inverted — h2 outsized h1). */
+  h1 { font-size: var(--fs-xl); line-height: 1.15;
+       letter-spacing: -0.01em; margin: 0 0 var(--space-2); }
+  h2 { font-size: var(--fs-large); margin: var(--space-4) 0 var(--space-2); }
+  h3 { font-size: var(--fs-base); margin: var(--space-3) 0 var(--space-2); }
+  a { color: var(--color-accent); }
+  fieldset { margin: var(--space-3) 0; border: 1px solid #767676;
              border-radius: 4px; }
   legend { font-weight: 600; }
-  button { font-size: 1rem; padding: 0.5rem 1.5rem; }
-  a:focus-visible, button:focus-visible, input:focus-visible {
+  a:focus-visible, button:focus-visible, input:focus-visible,
+  summary:focus-visible {
     outline: 3px solid #1a4a8a; outline-offset: 2px; }
+
+  /* Button token (F13): one primary solid style, plus a quiet variant. */
+  button { font-size: var(--fs-base); font-family: inherit;
+           padding: var(--space-2) var(--space-4); border-radius: 4px;
+           border: 1px solid var(--color-accent); cursor: pointer;
+           background: var(--color-accent); color: #fff; }
+  button:hover { background: #0949c9; border-color: #0949c9; }
+  button[disabled] { background: var(--color-muted);
+                     border-color: var(--color-muted); cursor: default; }
+  button.quiet { background: #fff; color: var(--color-accent); }
+  button.quiet:hover { background: #f0f5ff; }
+
+  /* Notice component (F19): three tiers. Old .ok/.banner/.error kept as
+     aliases until the 7.x copy tasks migrate their call sites. */
+  .notice { padding: var(--space-2) var(--space-3);
+            border: 1px solid var(--color-muted);
+            border-left: 6px solid var(--color-muted); border-radius: 4px;
+            margin: var(--space-3) 0; }
+  .notice-ok { border-color: var(--color-ok); background: #eef7f0; }
+  .notice-ok, .notice-ok > * { color: #14501f; }
+  .notice-warn { border-color: var(--color-warn); background: #fdf6e7; }
+  .notice-warn, .notice-warn > * { color: #6b4a00; }
+  .notice-err { border-color: var(--color-err); background: #fdeeec; }
+  .notice-err, .notice-err > * { color: #7f1d15; }
   .error, .banner { background: #fdecea; border: 1px solid #7a1f12;
                     padding: 0.5rem 1rem; border-radius: 4px; }
   .ok { background: #eafaf1; border: 1px solid #1d6f43;
         padding: 0.5rem 1rem; border-radius: 4px; }
-  .lead { font-size: 1.15rem; }
-  table { border-collapse: collapse; margin: 1rem 0; }
-  caption { text-align: left; font-size: 0.9rem; color: #3d3d3d;
-            padding-bottom: 0.5rem; }
+
+  /* Verdict / score-display: the headline judgment, first on the page. */
+  .verdict { margin: var(--space-4) 0; padding: var(--space-3) var(--space-4);
+             border: 1px solid #d7d7d7; border-radius: 8px;
+             border-left: 8px solid var(--color-muted); }
+  .verdict[data-band="ok"] { border-left-color: var(--color-ok); }
+  .verdict[data-band="warn"] { border-left-color: var(--color-warn); }
+  .verdict[data-band="err"] { border-left-color: var(--color-err); }
+  .verdict-band { font-size: var(--fs-small); font-weight: 700;
+                  text-transform: uppercase; letter-spacing: .09em;
+                  margin: 0 0 var(--space-1); color: var(--color-muted); }
+  .verdict[data-band="ok"] .verdict-band { color: var(--color-ok); }
+  .verdict[data-band="warn"] .verdict-band { color: var(--color-warn); }
+  .verdict[data-band="err"] .verdict-band { color: var(--color-err); }
+  .verdict-score { display: block; font-size: 3.25rem; font-weight: 700;
+                   line-height: 1; letter-spacing: -0.02em;
+                   font-variant-numeric: tabular-nums;
+                   margin: 0 0 var(--space-2); }
+  .verdict-label { margin: 0; color: var(--color-muted);
+                   font-size: var(--fs-base); max-width: 34rem; }
+
+  .section { margin: var(--space-4) 0; }
+  .lead { font-size: var(--fs-large); }
+  table { border-collapse: collapse; margin: var(--space-3) 0; width: 100%; }
+  caption { text-align: left; font-size: var(--fs-small);
+            color: var(--color-muted); padding-bottom: var(--space-2); }
   th, td { border: 1px solid #767676; padding: 0.35rem 0.6rem;
            text-align: left; }
+  thead th { background: #f3f4f6; }
   td.num { font-variant-numeric: tabular-nums; text-align: right; }
-  .note { font-size: 0.9rem; color: #3d3d3d; }
+  .note { font-size: var(--fs-small); color: var(--color-muted); }
+  details.section > summary { cursor: pointer; font-weight: 600;
+                             color: var(--color-ink); }
   ul.stems { columns: 2; }
-  footer { margin-top: 3rem; color: #3d3d3d; font-size: 0.9rem; }
+  footer { margin-top: var(--space-4); color: var(--color-muted);
+           font-size: var(--fs-small); }
 """
 
 
@@ -188,6 +249,35 @@ Done? Close this window and the terminal window it came from.</footer>
     return _document("dpi-eval", body, extra_head=meta)
 
 
+def _band(wer) -> tuple[str, str]:
+    """Map an average WER onto a plain-language judgment band.
+
+    Colour alone fails accessibility, so every band carries a word:
+    green <=10% "Strong", amber <=25% "Review the diffs", red otherwise.
+    """
+    if not isinstance(wer, (int, float)):
+        return ("", "No score")
+    if wer <= 0.10:
+        return ("ok", "Strong")
+    if wer <= 0.25:
+        return ("warn", "Review the diffs")
+    return ("err", "Needs attention")
+
+
+def _verdict_block(summary: dict) -> str:
+    """The headline judgment: large tabular score + banded label, first."""
+    wer = summary.get("wer_avg")
+    band, word = _band(wer)
+    return (
+        f'<section class="verdict" data-band="{band}">'
+        f'<p class="verdict-band">{escape(word)}</p>'
+        f'<p class="verdict-score">{_pct(wer)}</p>'
+        '<p class="verdict-label">Word error rate — the share of words '
+        "that differ from the ground truth. Lower is better.</p>"
+        "</section>"
+    )
+
+
 def _scores_section(
     run: str,
     succeeded: list[str],
@@ -208,29 +298,27 @@ def _scores_section(
         for stem in succeeded
     )
     return (
-        "<h2>Batch scores</h2>"
-        '<p class="lead">Word error rate: '
-        f"<strong>{_pct(summary.get('wer_avg'))}</strong> — the share of "
-        "words that differ from the ground truth. Lower is better.</p>"
-        f"<p>Raw character error rate: {_pct(summary.get('cer_avg'))} — the "
-        "share of characters that differ, line breaks included.</p>"
-        '<p class="note">These are raw scores: differences in line breaks '
-        "count as errors. If you typed your transcription as flowing "
-        "paragraphs, up to about half of a raw score can be layout rather "
-        "than recognition — read raw scores as an upper bound.</p>"
-        f"<p>Based on {len(succeeded)} graded page(s) — {total_words} "
-        f"words, {total_chars} characters of ground truth.</p>"
-        "<p>In each diff, the <strong>left column is the ground "
-        "truth</strong> (what the page says) and the <strong>right column "
-        "is what the OCR produced</strong>.</p>"
-        "<table><caption>Per-page scores. Percentages show how much of "
-        "each page differs from the ground truth.</caption>"
+        '<table class="section"><caption>Per-page scores. Percentages show '
+        "how much of each page differs from the ground truth.</caption>"
         '<thead><tr><th scope="col">Page</th>'
         '<th scope="col">Word error rate</th>'
         '<th scope="col">Raw character error rate</th>'
         '<th scope="col">Words</th>'
         '<th scope="col">Diff</th></tr></thead>'
         f"<tbody>{rows}</tbody></table>"
+        '<p class="note section">These are raw scores: differences in line '
+        "breaks count as errors. If you typed your transcription as flowing "
+        "paragraphs, up to about half of a raw score can be layout rather "
+        "than recognition — read raw scores as an upper bound. In each diff, "
+        "the left column is the ground truth (what the page says) and the "
+        "right column is what the OCR produced.</p>"
+        '<details class="section"><summary>How these scores are calculated'
+        "</summary>"
+        f"<p>Raw character error rate: {_pct(summary.get('cer_avg'))} — the "
+        "share of characters that differ, line breaks included.</p>"
+        f"<p>Based on {len(succeeded)} graded page(s) — {total_words} "
+        f"words, {total_chars} characters of ground truth.</p>"
+        "</details>"
     )
 
 
@@ -244,31 +332,34 @@ def results_page(
     page_metrics: dict[str, dict] | None = None,
 ) -> str:
     run = escape(run_id)
+    summary = summary or {}
     page_metrics = page_metrics or {}
+    sections = [
+        "<h1>Grading results</h1>",
+        f'<p class="note">Run <code>{run}</code></p>',
+    ]
     if exit_code == 0:
-        verdict = (
-            f'<div class="ok"><p>Graded {len(succeeded)} page(s).</p></div>'
-        )
+        sections.append(_verdict_block(summary))
     elif not succeeded:
-        verdict = (
-            '<div class="banner"><p>Nothing was graded. Check that your '
-            "ground-truth files end in <code>.gt.txt</code>, that they "
-            "share names with the OCR files, and that the OCR files open "
-            "correctly.</p></div>"
+        sections.append(
+            '<div class="notice notice-err"><p>Nothing was graded. Check '
+            "that your ground-truth files end in <code>.gt.txt</code>, that "
+            "they share names with the OCR files, and that the OCR files "
+            "open correctly.</p></div>"
         )
     else:
-        verdict = (
-            f'<div class="banner"><p>Too many pages failed ({len(failed)} '
-            f"of {len(failed) + len(succeeded)}). The results below are "
-            "incomplete — a supervisor should look at this batch.</p></div>"
+        sections.append(
+            '<div class="notice notice-warn"><p>Too many pages failed '
+            f"({len(failed)} of {len(failed) + len(succeeded)}). The results "
+            "below are incomplete — a supervisor should look at this "
+            "batch.</p></div>"
         )
-    sections = [f"<h1>Run {run}</h1>", verdict]
     if succeeded:
         sections.append(
-            _scores_section(run, succeeded, summary or {}, page_metrics)
+            _scores_section(run, succeeded, summary, page_metrics)
         )
         sections.append(
-            f'<p><a href="/files/{run}/reports/summary.html">'
+            f'<p class="section"><a href="/files/{run}/reports/summary.html">'
             "<strong>Full batch summary</strong></a> &middot; "
             f'<a href="/runs/{run}/download">Download reports (.zip)</a></p>'
         )
@@ -291,7 +382,7 @@ def results_page(
             "<code>.xml</code>, or <code>.txt</code>:</p>"
             f'<ul class="stems">{items}</ul>'
         )
-    sections.append('<p><a href="/">Grade another batch</a></p>')
+    sections.append('<p class="section"><a href="/">Grade another batch</a></p>')
     return _document(f"dpi-eval — {run_id}", "\n".join(sections))
 
 
