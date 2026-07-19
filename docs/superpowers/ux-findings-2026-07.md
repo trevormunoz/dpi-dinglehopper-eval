@@ -84,11 +84,21 @@ picker-feedback | general | deferred-upstream.
   `.ok` oversized → one notice component with success/warning/error
   tiers (also used by F2).
 
+- **F20 · M · general** (Trevor, 2026-07-19 post-walkthrough — pulled
+  up from the deferred bucket) — Wrapped report pages transform at
+  serve time: strip CDN scripts (self-contained rule; native `title`
+  tooltips survive), decimals → percentages, CER/WER legend, Ground
+  truth / OCR column labels, and shell CSS for the report's own grid
+  classes (Bootstrap CSS was already dropped by body extraction, so
+  columns rendered stacked — the proximate usability failure).
+  Hired by students reading diffs; evidence: Trevor's Task 8
+  walkthrough. Zip keeps raw originals. Spec amendment in the UX-pass
+  design doc authorizes the exact transform list.
+
 ## Deferred / upstream (recorded, not built)
 
-- Report-page INTERNALS: raw decimals (0.125 vs the app's 12.5%),
-  unexplained CER/WER acronyms, 2em headings, full-bleed layout —
-  dinglehopper-generated; only the wrapper seam (F4) is in scope.
+- Report-page internals beyond F20's serve-time transform (e.g.
+  changing what dinglehopper computes or emits) remain upstream-only.
 - F10 sub-element, per-folder file count (jobify audit, 2026-07-19):
   `dialog.open` returns only a path string; a client-side count would
   need filesystem access the capability deliberately withholds, and no

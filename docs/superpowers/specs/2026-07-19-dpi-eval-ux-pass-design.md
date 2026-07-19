@@ -177,6 +177,23 @@ not binding):
 - Engine files (`runner.py`, `cli.py`, `pairing.py`, `adapter.py`)
   untouched; dinglehopper-generated report files are not modified —
   the wrapper reframes them at serve time only.
+  **Amendment 2026-07-19 (Trevor, post-walkthrough): serve-time
+  transformation authorized (F20).** The wrapper may transform the
+  extracted body before re-serving: (1) strip the report's CDN
+  `<script>`/`<link>` references and its jQuery-dependent inline
+  script (self-contained-pages rule; the line tooltips keep working
+  via their native `title` attributes); (2) rewrite bare CER/WER
+  decimals to percentages; (3) inject a one-line CER/WER legend;
+  (4) label the diff columns Ground truth / OCR at the table itself;
+  (5) the shell stylesheet styles the report's own classes (`.row`,
+  `.col-md-6`, `.gt`, `.ocr`, `.diff`) — necessary because the
+  extraction already dropped Bootstrap's CSS and the columns were
+  rendering stacked. Files on disk are never modified; the zip ships
+  the raw originals (the wrapped view intentionally diverges from the
+  archival record). Markup coupling is accepted on the same
+  version-pin argument as the wrapper itself. PAR waived: records a
+  decision Trevor made directly after seeing the wrapped pages in the
+  Task 8 walkthrough.
 - **The picker script's structural footguns are preserved:**
   `window.__TAURI__` probed only inside the `load` handler (never
   top-level; tauri#12990) and no iframes anywhere (tauri#13577) — both
