@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from dpi_eval.pairing import discover_pairs
 from dpi_eval.web import create_app
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -213,6 +214,74 @@ def test_grade_paths_read_error_mid_enumeration_is_400_no_partial_grade(
         assert not list((tmp_path / "runs").glob("run-*"))
     finally:
         unreadable.chmod(0o644)
+
+
+def test_grade_paths_zero_pair_is_400_naming_unmatched_files(tmp_path, monkeypatch):
+    """F14: the engine's own pairing.py matcher is used as the test
+    oracle here — discover_pairs on these two dirs must itself report
+    zero pairs, or this test would be asserting a fiction."""
+    monkeypatch.setenv("DPI_EVAL_TOKEN", "correct-token")
+    client = make_client(tmp_path)
+    gt_dir, ocr_dir = _fixture_dirs(tmp_path)
+    (gt_dir / "page_0.gt.txt").rename(gt_dir / "page_1.gt.txt")
+    (ocr_dir / "page_0.txt").rename(ocr_dir / "page_2.txt")
+
+    pairs, missing = discover_pairs(gt_dir, ocr_dir)
+    assert pairs == []
+    assert missing == ["page_1"]
+
+    resp = client.post(
+        "/grade-paths",
+        json={"gt_dir": str(gt_dir), "ocr_dir": str(ocr_dir)},
+        headers={"X-DPI-Eval-Token": "correct-token"},
+    )
+    assert resp.status_code == 400
+    error = resp.json()["error"]
+    assert "page_1" in error  # GT with no matching OCR
+    assert "page_2" in error  # OCR with no matching GT
+
+
+def test_grade_paths_partial_pairing_mismatch_still_grades(tmp_path, monkeypatch):
+    """F14's flip side over JSON: a partial mismatch must not trip the
+    zero-pair pre-check — existing grade-and-report behavior applies."""
+    monkeypatch.setenv("DPI_EVAL_TOKEN", "correct-token")
+    client = make_client(tmp_path)
+    gt_dir, ocr_dir = _fixture_dirs(tmp_path)
+    (gt_dir / "page_1.gt.txt").write_bytes(
+        (FIXTURES / "text" / "page_0.gt.txt").read_bytes()
+    )
+    resp = client.post(
+        "/grade-paths",
+        json={"gt_dir": str(gt_dir), "ocr_dir": str(ocr_dir)},
+        headers={"X-DPI-Eval-Token": "correct-token"},
+    )
+    assert resp.status_code == 200
+    results = client.get(resp.json()["run_url"])
+    assert "page_0" in results.text
+
+
+def test_grade_paths_collision_message_names_relative_paths(tmp_path, monkeypatch):
+    """F8 over JSON: collision details must name the relative paths, not
+    the same bare basename twice."""
+    monkeypatch.setenv("DPI_EVAL_TOKEN", "correct-token")
+    client = make_client(tmp_path)
+    gt_dir, ocr_dir = _fixture_dirs(tmp_path)
+    a = ocr_dir / "a"
+    b = ocr_dir / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "page_0.txt").write_bytes(b"a")
+    (b / "page_0.txt").write_bytes(b"b")
+    (ocr_dir / "page_0.txt").unlink()
+    resp = client.post(
+        "/grade-paths",
+        json={"gt_dir": str(gt_dir), "ocr_dir": str(ocr_dir)},
+        headers={"X-DPI-Eval-Token": "correct-token"},
+    )
+    assert resp.status_code == 400
+    error = resp.json()["error"]
+    assert "a/page_0.txt" in error
+    assert "b/page_0.txt" in error
 
 
 def test_rglob_symlink_semantics_files_through_dirs_not_followed(tmp_path):

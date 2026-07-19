@@ -99,6 +99,25 @@ def test_basename_collision_is_rejected_naming_both_paths(tmp_path):
     assert not list((tmp_path / "runs").glob("run-*"))
 
 
+def test_collision_message_names_both_relative_paths(tmp_path):
+    """F8: the collision detail must carry the RELATIVE PATHS of the
+    colliding files, not the same bare basename twice — otherwise a
+    student can't tell which two files to rename."""
+    client = make_client(tmp_path)
+    gt, ocr = _fixture_pair()
+    resp = client.post(
+        "/grade",
+        files=[
+            ("gt_files", ("page_0.gt.txt", gt, "text/plain")),
+            ("ocr_files", ("a/page_0.txt", ocr, "text/plain")),
+            ("ocr_files", ("b/page_0.txt", ocr, "text/plain")),
+        ],
+    )
+    assert resp.status_code == 400
+    assert "a/page_0.txt" in resp.text
+    assert "b/page_0.txt" in resp.text
+
+
 def test_hidden_files_are_ignored_not_collided(tmp_path):
     client = make_client(tmp_path)
     gt, ocr = _fixture_pair()
@@ -151,7 +170,10 @@ def test_partial_failure_shows_banner_and_names_pages(tmp_path):
     assert '/runs/run-001/reports/summary' in page
 
 
-def test_nothing_graded_shows_banner(tmp_path):
+def test_zero_pair_upload_is_rejected_before_grading(tmp_path):
+    """F14: when discover_pairs would find zero pairs, /grade 400s with
+    the specific unmatched names before any grading happens, instead of
+    redirecting into a "Nothing was graded" results banner."""
     client = make_client(tmp_path)
     gt, ocr = _fixture_pair()
     resp = client.post(
@@ -162,9 +184,29 @@ def test_nothing_graded_shows_banner(tmp_path):
         ],
         follow_redirects=False,
     )
+    assert resp.status_code == 400
+    assert "page_9" in resp.text  # GT with no matching OCR
+    assert "page_0" in resp.text  # OCR with no matching GT
+
+
+def test_partial_pairing_mismatch_still_grades_matched_pages(tmp_path):
+    """F14's flip side: a partial mismatch (some names pair, some don't)
+    must NOT trip the zero-pair pre-check — the existing grade-and-report
+    behavior (missing pages named on the results page) still applies."""
+    client = make_client(tmp_path)
+    gt, ocr = _fixture_pair()
+    resp = client.post(
+        "/grade",
+        files=[
+            ("gt_files", ("page_0.gt.txt", gt, "text/plain")),
+            ("gt_files", ("page_1.gt.txt", gt, "text/plain")),
+            ("ocr_files", ("page_0.txt", ocr, "text/plain")),
+        ],
+        follow_redirects=False,
+    )
     assert resp.status_code == 303
     page = client.get(resp.headers["location"]).text
-    assert "Nothing was graded" in page
+    assert "page_0" in page
 
 
 def test_results_show_scores_wer_first_with_caveat(tmp_path):

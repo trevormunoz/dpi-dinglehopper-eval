@@ -26,6 +26,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 
 from dpi_eval import pages
+from dpi_eval.pairing import OCR_EXTENSIONS, discover_pairs
 from dpi_eval.runner import run_batch
 
 logger = logging.getLogger("dpi_eval.web")
@@ -55,6 +56,17 @@ def _collisions(uploads: list[UploadFile]) -> list[str]:
     return [
         path for paths in by_name.values() if len(paths) > 1 for path in paths
     ]
+
+
+def _ocr_stem(filename: str) -> str:
+    """Display name for an OCR file with no ground truth: strip whichever
+    OCR_EXTENSIONS suffix it has, mirroring pairing.py's own stem logic
+    (read-only use of its extension list, not a reimplementation of the
+    matching algorithm)."""
+    for ext in OCR_EXTENSIONS:
+        if filename.endswith(ext):
+            return filename[: -len(ext)]
+    return filename
 
 
 def _save(uploads: list[UploadFile], dest: Path) -> None:
@@ -120,9 +132,17 @@ def _grade_pipeline(
 ) -> Path:
     """Shared /grade + /grade-paths pipeline: drop hidden files, run the
     .gt.txt/empty-OCR/collision validations (same messages/order as the
-    original /grade), then save flat and run the batch. Raises
-    GradeValidationError before any run directory is created — a
-    validation failure never leaves a partial run behind."""
+    original /grade), then save flat and run the batch. Those checks
+    raise GradeValidationError before any run directory is created — a
+    validation failure never leaves a partial run behind.
+
+    The pairing pre-check (F14) runs after the flat save, because it
+    calls the engine's own pairing.discover_pairs, which matches files
+    on disk — it can leave a run directory containing the saved (but
+    ungraded) uploads behind when it rejects. It rejects only when
+    discover_pairs finds zero pairs; a partial mismatch (some names pair,
+    some don't) still proceeds to run_batch, which reports the unpaired
+    names on the results page as it always has."""
     gt_kept = _real_uploads(gt_uploads)
     ocr_kept = _real_uploads(ocr_uploads)
     if not any(Path(u.filename).name.endswith(".gt.txt") for u in gt_kept):
@@ -149,6 +169,26 @@ def _grade_pipeline(
     run_dir = _next_run_dir(base_dir)
     _save(gt_kept, run_dir / "gt")
     _save(ocr_kept, run_dir / "ocr")
+
+    pairs, missing_gt = discover_pairs(run_dir / "gt", run_dir / "ocr")
+    if not pairs:
+        orphan_ocr = sorted(Path(u.filename).name for u in ocr_kept)
+        details = tuple(
+            f"{stem} — no OCR file with the same name"
+            for stem in sorted(missing_gt)
+        ) + tuple(
+            f"{_ocr_stem(name)} — no ground-truth file with the same name"
+            for name in orphan_ocr
+        )
+        raise GradeValidationError(
+            "None of the files matched up by name, so nothing would be "
+            "graded. Each ground-truth file must be named after its OCR "
+            "file, with .gt.txt in place of the extension — for example "
+            "page_3.gt.txt grades page_3.xml. Fix these names, then try "
+            "again:",
+            details,
+        )
+
     result, code = run_batch(
         run_dir / "gt", run_dir / "ocr", run_dir / "reports"
     )
