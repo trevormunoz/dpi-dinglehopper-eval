@@ -448,10 +448,10 @@ def results_page(
         sections.append(_verdict_block(summary))
     elif not succeeded:
         sections.append(
-            '<div class="notice notice-err"><p>Nothing was graded. Check '
-            "that your ground-truth files end in <code>.gt.txt</code>, that "
-            "they share names with the OCR files, and that the OCR files "
-            "open correctly.</p></div>"
+            '<div class="notice notice-err"><p>None of the pages could be '
+            "graded. The files matched up by name, but grading failed on "
+            "every page — check that the OCR files open correctly, or "
+            "show this page to a supervisor.</p></div>"
         )
     else:
         sections.append(

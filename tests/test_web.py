@@ -173,7 +173,7 @@ def test_partial_failure_shows_banner_and_names_pages(tmp_path):
 def test_zero_pair_upload_is_rejected_before_grading(tmp_path):
     """F14: when discover_pairs would find zero pairs, /grade 400s with
     the specific unmatched names before any grading happens, instead of
-    redirecting into a "Nothing was graded" results banner."""
+    redirecting into a zero-success results banner."""
     client = make_client(tmp_path)
     gt, ocr = _fixture_pair()
     resp = client.post(

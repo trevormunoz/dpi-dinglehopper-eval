@@ -278,6 +278,21 @@ def _graded_results_page(**overrides):
     return pages.results_page(**kwargs)
 
 
+def test_results_zero_success_banner_blames_grading_not_naming():
+    # Post-F14: naming mismatches 400 before grading (see _grade_pipeline),
+    # so the only way to reach a zero-success results page is when every
+    # paired page failed to grade. The banner must name that cause, not
+    # the naming/pairing problem F14 already rejects upstream.
+    page = pages.results_page("run-001", [], ["page_0"], [], 1)
+    assert (
+        "None of the pages could be graded. The files matched up by name, "
+        "but grading failed on every page — check that the OCR files open "
+        "correctly, or show this page to a supervisor." in page
+    )
+    assert "ground-truth files end in" not in page
+    assert "share names with the OCR files" not in page
+
+
 def test_results_zero_success_exit_reads_back_to_the_form():
     # F16: nothing was graded, so the only exit must not claim grading
     # happened.
