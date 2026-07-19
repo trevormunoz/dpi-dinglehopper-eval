@@ -11,6 +11,7 @@ are the single source of truth.
 from html import escape
 
 _STYLE = """
+  /* tokens hand-duplicated in desktop/ui/index.html — keep in sync */
   :root {
     --space-1: .25rem; --space-2: .5rem; --space-3: 1rem; --space-4: 2rem;
     --fs-small: .875rem; --fs-base: 1rem; --fs-large: 1.25rem; --fs-xl: 2rem;
@@ -96,6 +97,30 @@ _STYLE = """
   ul.stems { columns: 2; }
   footer { margin-top: var(--space-4); color: var(--color-muted);
            font-size: var(--fs-small); }
+
+  /* Progressive form (F6/F10/F17/F7). Every cue here is visual only:
+     no rule disables a control or removes it from the tab order. */
+  fieldset { transition: opacity .18s ease; }
+  fieldset.is-muted { opacity: .55; }
+  .picked { display: flex; flex-wrap: wrap; align-items: baseline;
+            gap: var(--space-1) var(--space-2); margin-top: var(--space-2); }
+  .picked-check { color: var(--color-ok); font-weight: 700; }
+  .picked-name { font-weight: 600; }
+  .picked-path { flex-basis: 100%; color: var(--color-muted);
+                 font-size: var(--fs-small); overflow-wrap: anywhere; }
+  form.is-grading { opacity: .6; transition: opacity .18s ease; }
+  .grading-status { margin: var(--space-3) 0;
+                    padding: var(--space-2) var(--space-3);
+                    border: 1px solid var(--color-accent);
+                    border-left: 6px solid var(--color-accent);
+                    border-radius: 4px; }
+  .grading-status-headline { margin: 0; font-size: var(--fs-large);
+                             font-weight: 600; }
+  .grading-elapsed { font-variant-numeric: tabular-nums;
+                     color: var(--color-muted); }
+  @media (prefers-reduced-motion: reduce) {
+    fieldset, form.is-grading { transition: none; }
+  }
 """
 
 
@@ -125,125 +150,206 @@ def _pct(value) -> str:
 
 def form_page(*, token: str | None = None) -> str:
     meta = f'<meta name="dpi-eval-token" content="{escape(token)}">\n' if token else ""
-    body = f"""
+    # Plain (non-f) string: the inline script is full of `{}` literals, so
+    # kept un-escaped for readability. No Python interpolation happens here;
+    # the token is injected via `meta` in the document head instead.
+    body = """
 <h1>Grade OCR against ground truth</h1>
-<p>Pick the folder with your ground-truth transcriptions
-(<code>&lt;name&gt;.gt.txt</code>, one per sampled page) and the folder
-with the OCR files they grade (<code>&lt;name&gt;.hocr</code>,
-<code>&lt;name&gt;.xml</code>, or <code>&lt;name&gt;.txt</code> — the
-name before the extension must match). Only pages with a ground-truth
-file are graded.</p>
+<div id="grading-status" class="grading-status" hidden>
+  <p class="grading-status-headline"><span id="grading-status-msg"
+      aria-live="polite"></span><span id="grading-elapsed"
+      aria-hidden="true"></span></p>
+  <p class="note">Still working — the page updates when grading finishes.</p>
+</div>
+<p class="lead">Choose two folders, then grade.</p>
+<p>The name before the extension pairs a ground-truth file with the OCR
+file it grades. Only pages that have a ground-truth file are graded.</p>
+<ul>
+  <li>Ground-truth files end in <code>.gt.txt</code> — one per sampled
+    page.</li>
+  <li>OCR files end in <code>.hocr</code>, <code>.xml</code>, or
+    <code>.txt</code>.</li>
+  <li>Matching names pair up: <code>page_0.gt.txt</code> grades
+    <code>page_0.txt</code>.</li>
+</ul>
 <div id="dpi-eval-error" class="error" aria-live="polite" tabindex="-1"
      hidden></div>
 <form id="dpi-eval-form" action="/grade" method="post"
       enctype="multipart/form-data"
-      onsubmit="var b=document.getElementById('run');b.disabled=true;b.textContent='Grading\\u2026';">
+      onsubmit="if(window.__dpiStartGrading)window.__dpiStartGrading();">
   <fieldset id="gt-fieldset">
-    <legend>Ground-truth folder</legend>
+    <legend>1. Ground-truth folder</legend>
     <input type="file" id="gt_files" name="gt_files" webkitdirectory
            multiple required>
     <button type="button" id="gt-picker-btn" hidden
             aria-describedby="gt-picker-path">Choose ground-truth
       folder&hellip;</button>
-    <span id="gt-picker-path" class="note"></span>
+    <div id="gt-picker-path" class="picked" hidden>
+      <span class="picked-check" aria-hidden="true">&#10003;</span>
+      <span class="picked-name"></span>
+      <span class="picked-path"></span>
+    </div>
   </fieldset>
   <fieldset id="ocr-fieldset">
-    <legend>OCR folder</legend>
+    <legend>2. OCR folder</legend>
     <input type="file" id="ocr_files" name="ocr_files" webkitdirectory
            multiple required>
     <button type="button" id="ocr-picker-btn" hidden
             aria-describedby="ocr-picker-path">Choose OCR
       folder&hellip;</button>
-    <span id="ocr-picker-path" class="note"></span>
+    <div id="ocr-picker-path" class="picked" hidden>
+      <span class="picked-check" aria-hidden="true">&#10003;</span>
+      <span class="picked-name"></span>
+      <span class="picked-path"></span>
+    </div>
   </fieldset>
-  <button id="run" type="submit">Run</button>
+  <div id="ready-notice" class="notice notice-ok"
+       hidden>Both folders chosen — ready to grade.</div>
+  <button id="run" type="submit">Grade this batch</button>
 </form>
 <footer>Your files never leave this computer. Results are saved in the
 <code>dpi-eval-runs</code> folder in your home folder.<br>
-Done? Close this window and the terminal window it came from.</footer>
+Done? Close this window<span id="footer-terminal-note"> and the
+terminal window it came from</span>.</footer>
 <script>
-(function () {{
-  window.addEventListener('load', function () {{
+(function () {
+  var gradingTimer = null;
+
+  // Shared by both variants: the browser form calls this from its inline
+  // onsubmit before its native POST navigation; the desktop handler calls
+  // it after validation, before fetch.
+  function startGrading() {
+    var form = document.getElementById('dpi-eval-form');
+    var runBtn = document.getElementById('run');
+    var status = document.getElementById('grading-status');
+    var statusMsg = document.getElementById('grading-status-msg');
+    var elapsed = document.getElementById('grading-elapsed');
+    runBtn.disabled = true;
+    runBtn.textContent = 'Grading…';
+    form.setAttribute('aria-busy', 'true');
+    form.classList.add('is-grading');
+    status.hidden = false;
+    // Announced once via the aria-live message element. The elapsed
+    // counter below lives outside that region (and is aria-hidden), so
+    // its per-second ticks are never announced.
+    statusMsg.textContent = 'Grading your batch…';
+    var started = Date.now();
+    function tick() {
+      var s = Math.round((Date.now() - started) / 1000);
+      elapsed.textContent = ' (' + s + 's)';
+    }
+    tick();
+    gradingTimer = setInterval(tick, 1000);
+  }
+  window.__dpiStartGrading = startGrading;
+
+  function resetGrading() {
+    if (gradingTimer) { clearInterval(gradingTimer); gradingTimer = null; }
+    var form = document.getElementById('dpi-eval-form');
+    var runBtn = document.getElementById('run');
+    var status = document.getElementById('grading-status');
+    runBtn.disabled = false;
+    runBtn.textContent = 'Grade this batch';
+    form.setAttribute('aria-busy', 'false');
+    form.classList.remove('is-grading');
+    status.hidden = true;
+  }
+
+  window.addEventListener('load', function () {
     if (!window.__TAURI__) return;
     var tokenMeta = document.querySelector('meta[name="dpi-eval-token"]');
     if (!tokenMeta) return;
     var token = tokenMeta.content;
 
     var form = document.getElementById('dpi-eval-form');
-    var runBtn = document.getElementById('run');
     var errorBox = document.getElementById('dpi-eval-error');
-    var selections = {{gt: null, ocr: null}};
+    var readyNotice = document.getElementById('ready-notice');
+    var ocrFieldset = document.getElementById('ocr-fieldset');
+    var termNote = document.getElementById('footer-terminal-note');
+    if (termNote) termNote.hidden = true;  // desktop has no terminal (F3)
+    var selections = {gt: null, ocr: null};
 
-    function showError(message) {{
+    function showError(message) {
       errorBox.textContent = message;
       errorBox.hidden = false;
       errorBox.focus();
-    }}
+    }
 
-    function clearError() {{
+    function clearError() {
       errorBox.hidden = true;
       errorBox.textContent = '';
-    }}
+    }
 
-    function wirePicker(kind, inputId, btnId, pathId) {{
+    function updateReadyState() {
+      // Muting step 2 is a visual hint only (opacity via .is-muted); it
+      // never disables the control or removes it from the tab order, so a
+      // keyboard-first user may still choose OCR first.
+      if (selections.gt) ocrFieldset.classList.remove('is-muted');
+      else ocrFieldset.classList.add('is-muted');
+      readyNotice.hidden = !(selections.gt && selections.ocr);
+    }
+
+    function wirePicker(kind, inputId, btnId, pathId) {
       var input = document.getElementById(inputId);
       var btn = document.getElementById(btnId);
       var pathEl = document.getElementById(pathId);
       input.hidden = true;
       input.required = false;
       btn.hidden = false;
-      btn.addEventListener('click', function () {{
-        window.__TAURI__.dialog.open({{directory: true}}).then(
-          function (selected) {{
+      btn.addEventListener('click', function () {
+        window.__TAURI__.dialog.open({directory: true}).then(
+          function (selected) {
             if (!selected) return;
             selections[kind] = selected;
-            pathEl.textContent = selected;
-          }},
-          function (err) {{
+            var parts = selected.split(/[/\\\\]/).filter(Boolean);
+            var name = parts.length ? parts[parts.length - 1] : selected;
+            pathEl.querySelector('.picked-name').textContent = name;
+            pathEl.querySelector('.picked-path').textContent = selected;
+            pathEl.hidden = false;
+            updateReadyState();
+          },
+          function (err) {
             showError('Could not open the folder picker: ' + err);
-          }}
+          }
         );
-      }});
-    }}
+      });
+    }
 
+    ocrFieldset.classList.add('is-muted');
     wirePicker('gt', 'gt_files', 'gt-picker-btn', 'gt-picker-path');
     wirePicker('ocr', 'ocr_files', 'ocr-picker-btn', 'ocr-picker-path');
 
-    form.onsubmit = function (evt) {{
+    form.onsubmit = function (evt) {
       evt.preventDefault();
       clearError();
-      if (!selections.gt || !selections.ocr) {{
+      if (!selections.gt || !selections.ocr) {
         showError('Choose both the ground-truth folder and the OCR folder.');
         return;
-      }}
-      runBtn.disabled = true;
-      runBtn.textContent = 'Grading\\u2026';
-      form.setAttribute('aria-busy', 'true');
-      fetch('/grade-paths', {{
+      }
+      startGrading();
+      fetch('/grade-paths', {
         method: 'POST',
-        headers: {{
+        headers: {
           'Content-Type': 'application/json',
           'X-DPI-Eval-Token': token
-        }},
-        body: JSON.stringify({{gt_dir: selections.gt, ocr_dir: selections.ocr}})
-      }}).then(function (resp) {{
-        return resp.json().then(function (data) {{
-          return {{ok: resp.ok, data: data}};
-        }});
-      }}).then(function (result) {{
-        if (!result.ok) {{
+        },
+        body: JSON.stringify({gt_dir: selections.gt, ocr_dir: selections.ocr})
+      }).then(function (resp) {
+        return resp.json().then(function (data) {
+          return {ok: resp.ok, data: data};
+        });
+      }).then(function (result) {
+        if (!result.ok) {
           throw new Error(result.data.error || 'Grading failed.');
-        }}
+        }
         window.location = result.data.run_url;
-      }}).catch(function (err) {{
+      }).catch(function (err) {
         showError(err.message || String(err));
-        runBtn.disabled = false;
-        runBtn.textContent = 'Run';
-        form.setAttribute('aria-busy', 'false');
-      }});
-    }};
-  }});
-}})();
+        resetGrading();
+      });
+    };
+  });
+})();
 </script>
 """
     return _document("dpi-eval", body, extra_head=meta)

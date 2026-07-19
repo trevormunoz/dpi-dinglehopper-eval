@@ -198,6 +198,12 @@ def test_form_page_carries_instructions_and_shutdown_note(tmp_path):
     assert ".gt.txt" in text
     assert "Close this window" in text
     assert "never leave this computer" in text
+    # Task 7.1: the served form is the progressive variant (F6/F17/F9),
+    # and the terminal sentence stays gated for the desktop hide (F3).
+    assert "Choose two folders, then grade." in text
+    assert "1. Ground-truth folder" in text
+    assert ">Grade this batch</button>" in text
+    assert 'id="footer-terminal-note"' in text
 
 
 def test_zip_download_contains_reports(tmp_path):
