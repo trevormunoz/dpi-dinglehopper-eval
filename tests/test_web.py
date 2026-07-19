@@ -147,8 +147,8 @@ def test_partial_failure_shows_banner_and_names_pages(tmp_path):
     assert "could not read" in page  # failure reason in plain language
     assert "page_9" in page  # missing OCR, named
     assert "no file with the same name" in page  # skip reason
-    assert '/files/run-001/reports/page_0.html' in page
-    assert '/files/run-001/reports/summary.html' in page
+    assert '/runs/run-001/reports/page_0' in page
+    assert '/runs/run-001/reports/summary' in page
 
 
 def test_nothing_graded_shows_banner(tmp_path):
@@ -238,6 +238,29 @@ def test_zip_download_without_reports_is_404(tmp_path):
         follow_redirects=False,
     )
     assert client.get("/runs/run-001/download").status_code == 404
+
+
+def test_wrapped_report_serves_generated_html_in_shell(tmp_path):
+    client = make_client(tmp_path)
+    run = tmp_path / "runs" / "run-001"
+    (run / "reports").mkdir(parents=True)
+    (run / "result.json").write_text(
+        '{"succeeded": ["page_0"], "failed": [], "missing": [], "exit_code": 0}'
+    )
+    (run / "reports" / "page_0.html").write_text(
+        "<html><body><table class='diff'>DIFFCONTENT</table></body></html>"
+    )
+    resp = client.get("/runs/run-001/reports/page_0")
+    assert resp.status_code == 200
+    assert "DIFFCONTENT" in resp.text  # generated content survives
+    assert 'href="/runs/run-001"' in resp.text  # back-link in our shell
+    assert "--color-ink" in resp.text  # our stylesheet wraps it
+
+
+def test_wrapped_report_rejects_bad_names(tmp_path):
+    client = make_client(tmp_path)
+    assert client.get("/runs/run-001/reports/../secret").status_code in (400, 404)
+    assert client.get("/runs/nope/reports/page_0").status_code == 404
 
 
 def test_pick_port_falls_back_when_preferred_taken():

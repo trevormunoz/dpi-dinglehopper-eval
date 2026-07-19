@@ -293,7 +293,7 @@ def _scores_section(
         f'<td class="num">{_pct((page_metrics.get(stem) or {}).get("wer"))}</td>'
         f'<td class="num">{_pct((page_metrics.get(stem) or {}).get("cer"))}</td>'
         f'<td class="num">{(page_metrics.get(stem) or {}).get("n_words") or "—"}</td>'
-        f'<td><a href="/files/{run}/reports/{escape(stem)}.html">View diff</a></td>'
+        f'<td><a href="/runs/{run}/reports/{escape(stem)}">View diff</a></td>'
         "</tr>"
         for stem in succeeded
     )
@@ -359,7 +359,7 @@ def results_page(
             _scores_section(run, succeeded, summary, page_metrics)
         )
         sections.append(
-            f'<p class="section"><a href="/files/{run}/reports/summary.html">'
+            f'<p class="section"><a href="/runs/{run}/reports/summary">'
             "<strong>Full batch summary</strong></a> &middot; "
             f'<a href="/runs/{run}/download">Download reports (.zip)</a></p>'
         )
@@ -384,6 +384,15 @@ def results_page(
         )
     sections.append('<p class="section"><a href="/">Grade another batch</a></p>')
     return _document(f"dpi-eval — {run_id}", "\n".join(sections))
+
+
+def report_page(run_id: str, name: str, inner_html: str) -> str:
+    body = (
+        f"<h1>Report: {escape(name)} — {escape(run_id)}</h1>"
+        f'<p class="note"><a href="/runs/{escape(run_id)}">Back to results</a></p>'
+        f'<div class="section">{inner_html}</div>'
+    )
+    return _document(f"dpi-eval — {name}", body)
 
 
 def error_page(message: str, details: tuple[str, ...] = ()) -> str:

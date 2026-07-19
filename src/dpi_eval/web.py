@@ -298,6 +298,22 @@ def create_app(
             page_metrics=page_metrics,
         )
 
+    @app.get("/runs/{run_id}/reports/{name}", response_class=HTMLResponse)
+    def wrapped_report(run_id: str, name: str):
+        record = _load_result(base_dir, run_id)
+        if record is None or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            return HTMLResponse(pages.error_page("No such report."), status_code=404)
+        report = base_dir / run_id / "reports" / f"{name}.html"
+        if not report.is_file():
+            return HTMLResponse(pages.error_page("No such report."), status_code=404)
+        html = report.read_text(encoding="utf-8")
+        body = (
+            html.split("<body", 1)[-1].split(">", 1)[-1].rsplit("</body>", 1)[0]
+            if "<body" in html
+            else html
+        )
+        return pages.report_page(run_id, name, body)
+
     @app.get("/runs/{run_id}/download")
     def download(run_id: str):
         record = _load_result(base_dir, run_id)
