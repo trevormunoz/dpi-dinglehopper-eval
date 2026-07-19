@@ -77,10 +77,12 @@ jobs:
             exit 1
           fi
 
-          STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+          RESPONSE=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' \
             -F "gt_files=@tests/fixtures/text/page_0.gt.txt;type=text/plain" \
             -F "ocr_files=@tests/fixtures/text/page_0.txt;type=text/plain" \
             "$URL/grade")
+          STATUS=${RESPONSE%% *}
+          REDIRECT_URL=${RESPONSE#* }
 
           if [ "$STATUS" != "303" ]; then
             echo "expected 303 from /grade, got $STATUS" >&2
@@ -89,7 +91,23 @@ jobs:
             exit 1
           fi
 
-          echo "grade smoke test OK ($STATUS)"
+          # /grade 303s even when every page FAILS to grade (per-page
+          # failures land in result.json and the results page), so the
+          # redirect alone proves nothing — follow it and assert the
+          # success banner ("Graded 1 page(s).", rendered only when
+          # exit_code == 0) and the absence of the failure section
+          # ("Pages that failed to grade").
+          BODY=$(curl -s "$REDIRECT_URL")
+          if ! printf '%s' "$BODY" | grep -qF "Graded 1 page(s)." \
+             || printf '%s' "$BODY" | grep -qF "Pages that failed to grade"; then
+            echo "results page does not show a clean graded run:" >&2
+            printf '%s\n' "$BODY" >&2
+            cat "$LOG" >&2
+            kill "$SERVER_PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "grade smoke test OK ($STATUS, graded 1 page)"
           kill "$SERVER_PID" 2>/dev/null || true
       - name: Install tauri-cli
         run: cargo install tauri-cli --version '^2' --locked
