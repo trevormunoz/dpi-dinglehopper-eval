@@ -77,7 +77,21 @@ jobs:
             ls -la diag/reports || true
             "$BIN/dinglehopper-summarize" diag/reports \
               && echo "diag: summarize OK" || echo "diag: summarize FAILED ($?)"
+            # Hypothesis: with output PIPED (as subprocess.run(capture_output=True)
+            # does), the child's stdout encoding falls back to cp1252 and any
+            # non-ASCII print raises UnicodeEncodeError -> exit 1. Console run
+            # passes, piped run fails. PYTHONUTF8=1 should fix the piped case.
+            "$BIN/dinglehopper-summarize" diag/reports > diag-piped.out 2>&1 \
+              && echo "diag: summarize PIPED OK" || echo "diag: summarize PIPED FAILED ($?)"
+            tail -5 diag-piped.out || true
+            PYTHONUTF8=1 "$BIN/dinglehopper-summarize" diag/reports > diag-utf8.out 2>&1 \
+              && echo "diag: summarize PIPED+UTF8 OK" || echo "diag: summarize PIPED+UTF8 FAILED ($?)"
           fi
+
+          # Windows: child processes with piped stdio default to cp1252 and
+          # dinglehopper's tools print/write UTF-8 — force UTF-8 mode for the
+          # whole tree (no-op elsewhere). The desktop sidecar spawn mirrors this.
+          export PYTHONUTF8=1
 
           LOG=server.log
           "$BIN/dpi-eval-web" --no-browser >"$LOG" 2>&1 &
