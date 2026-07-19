@@ -18,7 +18,7 @@
 | 2 Critiques | opus ×2 (blind PAR) | Evaluative taste + evidence-grounded UX judgment — the quality ceiling of the whole pass |
 | 2 Aggregation | orchestrator | Mechanical merge + severity arbitration is the dispatcher's job (PAR rule) |
 | 3 Cut-line | Trevor | Product judgment; only human gate can bound scope |
-| 4 TRACER slice | **opus** | Establishes the design system's taste (tokens, hierarchy, verdict treatment) — the one implementation task where aesthetic judgment is the deliverable |
+| 4 TRACER slice | **opus** | Establishes the design system's taste (tokens, hierarchy, verdict treatment) — the one implementation task where aesthetic judgment is the deliverable. **Works under the frontend-design skill (Trevor, 2026-07-19): the implementer loads it before writing CSS; the orchestrator loads it when reviewing design output. Applies to any 7.x task with visual scope too.** |
 | 5 Wrapper route | sonnet | Well-specified route + wrap with tests written in the plan |
 | 6 Placeholder | sonnet | Small, but user-facing copy quality matters (not haiku-mechanical) |
 | 7.x Fan-out | sonnet; opus if touching the picker script | Applying a settled system = standard work; the script's ID-contract/footgun zone is precision work |
@@ -65,7 +65,16 @@ Fable stays reserved (standing rule: hardest problems only — none anticipated 
 - Create: `docs/superpowers/ux-findings-2026-07.md`
 
 - [ ] **Step 1:** Dispatch two blind reviewers (PAR wrapper), identical inputs: all screenshots + `src/dpi_eval/pages.py` + `desktop/ui/index.html`. Lens A: flow/forms/copy per GOV.UK-style patterns (button states, error placement, instructional copy register, the two-pickers-one-Run shape). Lens B: visual credibility (hierarchy, type scale, spacing rhythm, table treatment, scannability). Both told: dinglehopper-generated diff/summary INTERNALS are out of restyle scope (framing/wrapper critique welcome; internals findings → Deferred/upstream).
-- [ ] **Step 2:** Aggregate per PAR rules (dedupe, worst severity wins). Write `docs/superpowers/ux-findings-2026-07.md`: one finding per line item — id, severity (critical/serious/minor), effort (S/M/L), area tag (results-legibility | waiting-states | picker-feedback | general | deferred-upstream), description, screenshot reference. Include an empty `## Deferred` section for Stage 3.
+- [ ] **Step 2:** Aggregate per PAR rules (dedupe, worst severity wins).
+  Pre-seed one Trevor-sourced finding (2026-07-19, rides the cut-line
+  like any other): **pairing pre-check** — "name before the extension
+  must match" is mechanically checkable before grading; call the
+  engine's own `pairing.py` matcher (read-only import — exact parity,
+  no reimplementation) on the filename lists inside `_grade_pipeline`
+  and 400 with the specific unmatched names instead of grading into a
+  "Nothing was graded" banner. Tag: general; effort M; NOTE if chosen
+  it needs a narrow spec-amendment widening the `web.py` fence to
+  pipeline validation. Write `docs/superpowers/ux-findings-2026-07.md`: one finding per line item — id, severity (critical/serious/minor), effort (S/M/L), area tag (results-legibility | waiting-states | picker-feedback | general | deferred-upstream), description, screenshot reference. Include an empty `## Deferred` section for Stage 3.
 - [ ] **Step 3:** Commit the findings doc.
 
 ### Task 3: Stage 3 cut-line (human gate — Trevor)
