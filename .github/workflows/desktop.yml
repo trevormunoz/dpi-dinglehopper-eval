@@ -63,34 +63,12 @@ jobs:
           # and the graded-result assertion below (correctly) fails the job.
           export PATH="$PWD/$BIN:$PATH"
 
-          # TEMPORARY DIAGNOSTIC (Windows summarize exit 1, run 29689842118):
-          # runner.py captures the subprocess stderr into the exception, so the
-          # server log never shows WHY dinglehopper-summarize failed. Run the
-          # exact commands directly with stderr flowing to this log. Remove
-          # once the Windows failure is understood.
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            mkdir -p diag/gt diag/ocr
-            cp tests/fixtures/text/page_0.gt.txt diag/gt/
-            cp tests/fixtures/text/page_0.txt diag/ocr/
-            "$BIN/dinglehopper" diag/gt/page_0.gt.txt diag/ocr/page_0.txt page_0 diag/reports \
-              && echo "diag: dinglehopper OK" || echo "diag: dinglehopper FAILED ($?)"
-            ls -la diag/reports || true
-            "$BIN/dinglehopper-summarize" diag/reports \
-              && echo "diag: summarize OK" || echo "diag: summarize FAILED ($?)"
-            # Hypothesis: with output PIPED (as subprocess.run(capture_output=True)
-            # does), the child's stdout encoding falls back to cp1252 and any
-            # non-ASCII print raises UnicodeEncodeError -> exit 1. Console run
-            # passes, piped run fails. PYTHONUTF8=1 should fix the piped case.
-            "$BIN/dinglehopper-summarize" diag/reports > diag-piped.out 2>&1 \
-              && echo "diag: summarize PIPED OK" || echo "diag: summarize PIPED FAILED ($?)"
-            tail -5 diag-piped.out || true
-            PYTHONUTF8=1 "$BIN/dinglehopper-summarize" diag/reports > diag-utf8.out 2>&1 \
-              && echo "diag: summarize PIPED+UTF8 OK" || echo "diag: summarize PIPED+UTF8 FAILED ($?)"
-          fi
-
-          # Windows: child processes with piped stdio default to cp1252 and
-          # dinglehopper's tools print/write UTF-8 — force UTF-8 mode for the
-          # whole tree (no-op elsewhere). The desktop sidecar spawn mirrors this.
+          # Hardening, not a bug fix: the historical Windows summarize failure
+          # was invalid JSON from backslash paths (fixed in runner.py via
+          # as_posix; upstream report in docs/upstream/). UTF-8 mode stays
+          # because dinglehopper reads report JSON with locale-default open()
+          # (cp1252 on Windows) and real transcriptions contain non-ASCII the
+          # ASCII fixture cannot exercise. No-op on POSIX runners.
           export PYTHONUTF8=1
 
           LOG=server.log
@@ -147,43 +125,6 @@ jobs:
 
           echo "grade smoke test OK ($STATUS, graded 1 page)"
           kill "$SERVER_PID" 2>/dev/null || true
-      # TEMPORARY DIAGNOSTIC v2 (Windows summarize exit 1, runs 29689842118 and
-      # 29690929460): v1 refuted the piped-cp1252 hypothesis — on Windows both
-      # bash-direct and bash-piped summarize pass, yet runner.summarize()
-      # (Python parent, capture_output=True, real run dir under $USERPROFILE)
-      # still exits 1 with PYTHONUTF8=1 set. check=True swallows the child's
-      # captured stderr, so the actual traceback has never been seen. Replay
-      # the exact failing call against the leftover run dir and print stderr.
-      # Remove alongside the v1 block once the root cause is understood.
-      - name: Windows summarize diagnostic (TEMPORARY)
-        if: failure() && runner.os == 'Windows'
-        shell: python
-        env:
-          PYTHONUTF8: "1"
-        run: |
-          import os, pathlib, subprocess
-          scripts = pathlib.Path("smoke-venv/Scripts").resolve()
-          os.environ["PATH"] = str(scripts) + os.pathsep + os.environ["PATH"]
-          runs = pathlib.Path(os.environ["USERPROFILE"]) / "dpi-eval-runs"
-          if not runs.exists():
-              print("no runs dir at", runs, "- failure happened before any grade")
-          for run_dir in sorted(runs.glob("run-*")):
-              print("=== run dir:", run_dir)
-              for p in sorted(run_dir.rglob("*")):
-                  detail = p.stat().st_size if p.is_file() else "<dir>"
-                  print("   ", p.relative_to(run_dir), detail)
-              reports = run_dir / "reports"
-              if not reports.is_dir():
-                  print("    (no reports dir)")
-                  continue
-              r = subprocess.run(
-                  ["dinglehopper-summarize", str(reports)],
-                  capture_output=True,
-                  text=True,
-              )
-              print("replay rc:", r.returncode)
-              print("replay stdout:", r.stdout[-2000:])
-              print("replay stderr:", r.stderr[-2000:])
       - name: Install tauri-cli
         run: cargo install tauri-cli --version '^2' --locked
       - name: Bundle
