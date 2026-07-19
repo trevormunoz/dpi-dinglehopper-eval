@@ -3,7 +3,14 @@ on:
   push:
     branches: [feat/dpi-eval-desktop, main]
     # paths + paths-ignore cannot combine on one event (GitHub docs); a trailing
-    # '!' exclusion skips rebuilds for markdown-only changes.
+    # '!' exclusion skips rebuilds for markdown-only changes. branches and
+    # tags are OR'd together as the ref filter, then ANDed with paths — BUT
+    # GitHub computes the paths diff against the ref's previous state, and a
+    # freshly created tag has no previous state to diff against, so a
+    # `desktop-v*` tag push always matches the paths filter trivially (all
+    # files at that SHA count as "changed") and the bundle job still runs.
+    tags:
+      - 'desktop-v*'
     paths:
       - desktop/**
       - src/**
@@ -26,23 +33,64 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build runtime payload (probe)
+      - name: Build runtime payload (full)
         shell: bash
+        # Full mode (~84 files / ~90MB wheelhouse) resolves the whole
+        # dependency closure incl. ocrd-stack, so this step runs meaningfully
+        # longer than the probe did; no explicit step timeout is set here
+        # (falls back to the job/workflow default), matching prior behavior.
         run: |
           desktop/runtime/fetch_python.sh
-          desktop/runtime/build_wheelhouse.sh --probe
-      - name: Offline bootstrap smoke test
+          desktop/runtime/build_wheelhouse.sh
+      - name: Grade-over-HTTP smoke test
         shell: bash
+        # "only the sentinel knows the port": _pick_port() in web.py prefers
+        # 8765 but falls back to an ephemeral port, so the server's own
+        # stdout sentinel line ("dpi-eval-web running at <url>") is the only
+        # source of truth for the URL — never assume 8765.
         run: |
           if [ -x desktop/runtime/payload/cpython/bin/python3 ]; then
-            PY=desktop/runtime/payload/cpython/bin/python3; BIN=probe-venv/bin
+            PY=desktop/runtime/payload/cpython/bin/python3; BIN=smoke-venv/bin
           else
-            PY=desktop/runtime/payload/cpython/python.exe; BIN=probe-venv/Scripts
+            PY=desktop/runtime/payload/cpython/python.exe; BIN=smoke-venv/Scripts
           fi
-          "$PY" -m venv probe-venv
-          "$BIN/pip" install --no-index --find-links desktop/runtime/payload/wheelhouse --no-deps dpi-dinglehopper-eval
-          "$BIN/pip" install --no-index --find-links desktop/runtime/payload/wheelhouse fastapi uvicorn python-multipart lxml
-          "$BIN/dpi-eval-web" --help
+          "$PY" -m venv smoke-venv
+          "$BIN/pip" install --no-index --find-links desktop/runtime/payload/wheelhouse dpi-dinglehopper-eval
+
+          LOG=server.log
+          "$BIN/dpi-eval-web" --no-browser >"$LOG" 2>&1 &
+          SERVER_PID=$!
+
+          URL=""
+          for _ in $(seq 1 60); do
+            if grep -q "dpi-eval-web running at " "$LOG" 2>/dev/null; then
+              URL=$(grep "dpi-eval-web running at " "$LOG" | head -1 | sed -E 's/.*running at (http:\/\/[^ ]+).*/\1/')
+              break
+            fi
+            sleep 1
+          done
+
+          if [ -z "$URL" ]; then
+            echo "server did not print its sentinel line within 60s" >&2
+            cat "$LOG" >&2
+            kill "$SERVER_PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+            -F "gt_files=@tests/fixtures/text/page_0.gt.txt;type=text/plain" \
+            -F "ocr_files=@tests/fixtures/text/page_0.txt;type=text/plain" \
+            "$URL/grade")
+
+          if [ "$STATUS" != "303" ]; then
+            echo "expected 303 from /grade, got $STATUS" >&2
+            cat "$LOG" >&2
+            kill "$SERVER_PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "grade smoke test OK ($STATUS)"
+          kill "$SERVER_PID" 2>/dev/null || true
       - name: Install tauri-cli
         run: cargo install tauri-cli --version '^2' --locked
       - name: Bundle
@@ -60,3 +108,22 @@ jobs:
         with:
           name: probe-${{ matrix.os }}
           path: dist-artifacts/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: probe-*
+          path: dist-artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            dist-artifacts/*.dmg
+            dist-artifacts/*setup.exe
