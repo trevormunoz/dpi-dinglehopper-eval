@@ -201,6 +201,68 @@ Update `results_page`'s "View diff" and "Full batch summary" links from `/files/
 - [ ] **Step 3:** No pytest surface (static file; shell not run by tests). Verification: file:// open with the Task 1 event stub, all three states screenshot-compared.
 - [ ] **Step 4:** Commit: `feat(desktop): placeholder tokens, honest copy, friendly failure state`.
 
+### Task 4 addendum (cut-line: EVERYTHING, 2026-07-19)
+
+Task 4's system additionally defines (used by 7.x): a **notice
+component** with three tiers (`.notice`, `.notice-ok`, `.notice-warn`,
+`.notice-err` — replacing `.ok`/`.banner`/`.error` while keeping those
+class names as aliases until 7.x migrates them) and a **button token**
+(`button` primary solid style; `button.quiet` secondary) [F13, F19].
+Task 4 also covers F15 (H1 "Grading results", run id as caption) and
+F5's label change lands in Task 5 with the link move.
+
+### Task 7.1: Form page bundle — F3, F6, F7, F9, F10, F17 (opus — touches the picker script)
+
+**Files:** Modify `src/dpi_eval/pages.py` (form_page: intro, fieldsets,
+button, footer, picker script), tests in `tests/test_pages.py` +
+`tests/test_web.py`.
+
+- [ ] Failing tests first: numbered legends ("1. Ground-truth folder"),
+  button text "Grade this batch", intro lead sentence present, footer
+  terminal-sentence wrapped in an element the script can hide
+  (`id="footer-terminal-note"`), picker confirmation row markup
+  (`class="picked"` row with wrapping path span), status region for
+  the grading wait (`id="grading-status"` aria-live, hidden until
+  submit). Keep ALL fenced IDs and a11y mechanisms (ID-contract test
+  from the plan's Task 7.x block lands here too).
+- [ ] Implement: intro rewrite per F6 ("Choose two folders, then
+  grade." + bulleted naming rules); legends numbered; Run → "Grade
+  this batch"; desktop script hides `#footer-terminal-note` and
+  writes picker confirmations into the `.picked` rows (✓ + wrapped
+  path; file count omitted — dialog returns only a path); on submit
+  both variants unhide `#grading-status` ("Grading… this can take a
+  minute for large batches."). Buttons pick up the Task 4 token.
+- [ ] `uv run pytest` green; commit `feat(web): form-page UX bundle`.
+
+### Task 7.2: Results/error copy bundle — F16, F18 (sonnet)
+
+**Files:** Modify `src/dpi_eval/pages.py` (results_page), tests.
+
+- [ ] Failing tests: zero-success state renders "Back to the form" (not
+  "Grade another batch"); a note after the download link contains
+  "dpi-eval-runs". Implement; migrate results/error banners to the
+  Task 4 notice tiers (warn for partial/zero-success, err for
+  can't-grade, ok for success). `uv run pytest` green; commit
+  `feat(web): results and recovery copy fixes`.
+
+### Task 7.3: Pipeline validation quality — F8, F14 (sonnet, TDD, spec-amended fence)
+
+**Files:** Modify `src/dpi_eval/web.py` (`_grade_pipeline` validation
+stage ONLY, per amendment), tests in `tests/test_grade_paths.py` +
+`tests/test_web.py`.
+
+- [ ] Failing tests: (a) gt `page_1.gt.txt` + ocr `page_2.txt` → 400
+  whose message names both `page_1` (no OCR) and `page_2` (no ground
+  truth) — via the engine's `pairing.py` matcher imported read-only,
+  NOT a reimplementation; assert parity with `discover_pairs`
+  semantics by using it in the test oracle too; (b) collision message
+  includes the relative paths (`a/page_0.txt`, `b/page_0.txt`), not
+  bare basenames twice. Both endpoints (/grade HTML, /grade-paths
+  JSON) surface the same messages in their own formats.
+- [ ] Implement inside the validation stage; engine files untouched;
+  token/Host/contract untouched. `uv run pytest` green; commit
+  `feat(web): pairing pre-check and distinguishable collision paths`.
+
 ### Task 7.x: Cut-line findings fan-out (appended at Task 3 Step 3)
 
 Written by the orchestrator from the approved findings, one task per finding, following Task 4's step pattern (failing test → red → implement → green → commit), tiered sonnet unless a task touches the picker script (then opus, with the ID-contract and footgun constraints quoted in the prompt). The fan-out batch ALSO adds the spec-mandated ID-contract test:

@@ -157,6 +157,15 @@ not binding):
   feature-detected picker variant.
 - The webview stays a renderer (standing rule): no new reliance on
   browser chrome; anything OS-adjacent goes to the shell.
+- **Amendment (Trevor via cut-line decision, 2026-07-19): second
+  narrow `web.py` exception — pipeline validation quality.** Two
+  changes inside `_grade_pipeline`'s validation stage only: (F14) a
+  pairing pre-check calling the engine's own `pairing.py` matcher
+  (read-only import; never modified) on the filename lists, rejecting
+  with the specific unmatched names before any grading; (F8) collision
+  messages carry relative paths so duplicates are distinguishable.
+  Token check, Host guard, response contracts, and all routes remain
+  untouched by this exception.
 - **`web.py` fence, one narrow exception.** The token check, Host
   guard, and `/grade-paths` contract are untouched. The sole authorized
   addition is the report-wrapper: **one new read-only GET route** that

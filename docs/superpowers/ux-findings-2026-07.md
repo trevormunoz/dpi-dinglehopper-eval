@@ -98,4 +98,8 @@ picker-feedback | general | deferred-upstream.
 
 ## Cut-line
 
-_Set by Trevor at Stage 3; items below the line move to Deferred._
+**Set by Trevor, 2026-07-19: EVERYTHING above the line — all 19
+findings (F1–F19) are in scope.** Nothing moved to Deferred beyond the
+pre-existing upstream bucket. The F8+F14 web.py fence widening is
+authorized by this decision (spec amendment recorded in the UX-pass
+design doc).
