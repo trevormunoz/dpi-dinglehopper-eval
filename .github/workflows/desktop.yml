@@ -63,6 +63,22 @@ jobs:
           # and the graded-result assertion below (correctly) fails the job.
           export PATH="$PWD/$BIN:$PATH"
 
+          # TEMPORARY DIAGNOSTIC (Windows summarize exit 1, run 29689842118):
+          # runner.py captures the subprocess stderr into the exception, so the
+          # server log never shows WHY dinglehopper-summarize failed. Run the
+          # exact commands directly with stderr flowing to this log. Remove
+          # once the Windows failure is understood.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            mkdir -p diag/gt diag/ocr
+            cp tests/fixtures/text/page_0.gt.txt diag/gt/
+            cp tests/fixtures/text/page_0.txt diag/ocr/
+            "$BIN/dinglehopper" diag/gt/page_0.gt.txt diag/ocr/page_0.txt page_0 diag/reports \
+              && echo "diag: dinglehopper OK" || echo "diag: dinglehopper FAILED ($?)"
+            ls -la diag/reports || true
+            "$BIN/dinglehopper-summarize" diag/reports \
+              && echo "diag: summarize OK" || echo "diag: summarize FAILED ($?)"
+          fi
+
           LOG=server.log
           "$BIN/dpi-eval-web" --no-browser >"$LOG" 2>&1 &
           SERVER_PID=$!
