@@ -262,3 +262,92 @@ failure list only catches unreadable-at-the-OS-level inputs (see
 **Upstream candidate.** A dinglehopper `--strict-format` flag (error instead of
 plain-text fallback on unparseable XML) would let wrappers distinguish "bad
 recognition" from "bad file." Small, opt-in, mergeable.
+
+## 10. Desktop-pilot readiness — what shipping to non-technical users actually required
+
+**Source (2026-07-17 to 2026-07-20).** The desktop packaging plan
+(`docs/superpowers/specs/2026-07-17-dpi-eval-desktop-tauri-design.md`),
+its human-probe checklist, and the accessibility UX pass that followed.
+
+**Context.** `dpi-eval-web` (findings #5) proved the localhost-server
+shape works, but still asked HDC student workers to run a `uvx` command
+in a terminal. The desktop app's job was to remove that last barrier —
+double-click, no terminal, no CLI skills — while changing nothing about
+the grading engine itself.
+
+**Shell decision.** A Tauri v2 shell wrapping the same FastAPI app was
+chosen over PyInstaller-style single-binary freezing specifically
+because the trust-UX risk (Gatekeeper/SmartScreen behavior on managed
+lab machines) needed to be probed empirically before committing, and
+Tauri's smaller bundle made that probe cheap to iterate on. The probe
+confirmed the risk was real but survivable: an unsigned build on macOS
+15 first showed a hard-blocking "damaged" dialog with no escape hatch,
+which ad-hoc signing (`signingIdentity: "-"`) reclassified into the
+standard "unidentified developer" dialog with a working Open Anyway
+path — friction, not a block. That distinction is exactly what changed
+between the checklist's original wording and the README's final
+troubleshooting language: what ships is the ad-hoc-signed, friction-pass
+build, not the earlier hard-blocked one.
+
+**The Windows JSON-escape bug.** Once packaging cleared macOS, Windows
+CI failed every real grade with `dinglehopper-summarize` exiting 1. The
+first hypothesis — piped stdio forcing cp1252 encoding on non-ASCII
+report text — was tested and refuted directly (console and piped runs
+both passed when paths were relative). The actual root cause:
+dinglehopper's `report.json.j2` template interpolates GT/OCR paths into
+JSON without escaping them (`"gt": "{{ gt }}"`, no `|tojson`), so any
+Windows absolute path — which always contains backslashes — produces
+invalid JSON (`\U` is not a legal escape). Every real Windows grade hit
+this; only relative, forward-slash paths (as in most test fixtures)
+mask it, which is why it survived undetected upstream and in this
+repo's own CI until a real absolute-path run exercised it. The fix
+lives on our side of the fence: `run_page` now passes `gt.as_posix()`
+and `ocr.as_posix()` to the dinglehopper subprocess, which produces
+forward-slash paths dinglehopper can round-trip regardless of the
+template bug. A draft upstream issue is written up at
+`docs/upstream/dinglehopper-report-json-escape.md`, proposing the
+one-line `|tojson` fix that would make our workaround unnecessary
+(the `differences` dict already uses `|tojson`, so the template already
+has the convention it needs, just not applied consistently).
+
+**What it means for the program.** This is the same lesson as findings
+#7 and #9, restated a third time: dinglehopper was built and tested
+against a narrower shape of input than DPI's real usage produces (there,
+line-wrapped ground truth and unparseable-but-plain-text-readable XML;
+here, Windows-native absolute paths). A tool this program depends on for
+QA needs its edge cases probed against real deployment conditions, not
+assumed from its own test suite — and workarounds belong in the wrapper
+only until upstream can absorb the fix.
+
+**The unused `--differences` statistics.** A late usability pass — after
+grading a real multi-page batch with visibly repeated OCR mistakes —
+found that the batch summary report was effectively empty: only
+averages and blank space, no detail. The cause: `runner.py` never passed
+dinglehopper's `--differences` flag to the CLI, so the per-page JSON
+reports never carried the `differences` dict dinglehopper is capable of
+producing, and the summary's own common-mistakes aggregation had
+nothing to aggregate. The batch summary had never actually shown what it
+was designed to show. Passing `--differences 1` (a Click boolean *value*
+option, not a bare flag — confirmed empirically, since the CLI source
+doesn't mark it `is_flag`) unlocked it: the summary report now includes
+sortable tables of the most common character- and word-level mistakes
+across the whole batch (e.g. "e→c" happening three times), which is
+exactly the "where does the OCR engine systematically go wrong" view a
+supervisor or curator needs to judge whether a vendor's OCR is fit for
+purpose — not just a single aggregate error rate.
+
+**Accessibility outcome.** The UX pass that followed (nineteen findings
+from a two-lens critique, implemented and then re-verified) closed with
+a full keyboard-only walkthrough of the real desktop app: folder
+selection, grading, results, and a deliberately triggered pairing error
+were all completed without a mouse, with focus landing correctly on the
+error region and the live-region status announcements firing once
+rather than on every tick. That walkthrough is the concrete evidence
+behind treating the pilot build as accessibility-ready for its own
+interface — separate from, and prerequisite to, the tool's larger job of
+judging OCR text's accessibility as a *content* concern.
+
+**Status.** All three threads (shell/signing, Windows path fix,
+`--differences` unlock) are landed and CI-verified on both platforms;
+the UX pass is implemented and gate-passed. Pilot documentation
+(README) followed this entry.
