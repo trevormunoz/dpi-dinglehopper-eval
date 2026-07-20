@@ -167,5 +167,16 @@ measure variance components and rekey cost per page to price layers 2–3.
   formal citation.
 - NER-degradation figures (F1 90→60% as CER 8→20%): secondary-source, check
   before citing.
-- ARL Title II implications PDF (arl.org, Oct 2024): machine extraction
-  failed — pull manually; closest thing to a sector position paper.
+- ARL Title II implications PDF (arl.org, Oct 2024): READ 2026-07-20 (Trevor
+  supplied the PDF). Confirms our exceptions analysis; ARL's own words: "no
+  specific guidance on how libraries should approach meeting the
+  requirements," library examples in the rule "do not align with research
+  libraries' digital environment." Recommends exception-framework as a
+  prioritization tool run by a cross-functional team (legal/ADA/e-resources/
+  IT/digital collections) with a blank analysis chart (p.13); worked example
+  is licensed e-resources ONLY — legacy digitized content and special
+  collections are listed as categories but never analyzed. Undue-burden/
+  fundamental-alteration lever noted for hard material (language-expertise
+  example — relevant to the Japanese books). Expects Dept of Ed §504 NPRM on
+  the same exception model. Requires WCAG 2.1 June 2018 version specifically.
+  Predates the 2026 deadline extension.
