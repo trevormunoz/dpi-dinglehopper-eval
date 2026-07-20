@@ -54,3 +54,13 @@ supervisor-view/image-evidence seam.
   zip?).
 - Whether amber/red bands change student behavior, and in which
   direction (the whose-error risk made concrete).
+- **Rekey cost, observed (added 2026-07-20):** how long a rekeyed page
+  actually takes and how many pages a student completes per sitting —
+  measured during the pilot, not estimated. This is one of the two
+  numbers that price the sampling methodology.
+- **Error clustering, measured (added 2026-07-20):** grade enough
+  multi-page objects across material types to estimate how strongly
+  error rates cluster within objects (intraclass correlation → design
+  effect). No published value exists for OCR; this number sets the
+  page-count multiplier for every future sample. See
+  docs/superpowers/2026-07-20-sampling-research-grounding.md §3.
