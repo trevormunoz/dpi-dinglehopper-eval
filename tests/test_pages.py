@@ -412,10 +412,10 @@ def test_transform_report_body_rewrites_page_metrics_to_percentages():
 
 def test_transform_report_body_rewrites_summary_average_metrics():
     body = pages.transform_report_body(_summary_body())
-    assert "3.5%" in body
-    assert "12.5%" in body
-    assert "Average CER: 0.0345" not in body
-    assert "Average WER: 0.125" not in body
+    assert "<p>Average character error rate (CER): 48.8%</p>" in body
+    assert "<p>Average word error rate (WER): 78.1%</p>" in body
+    assert "Average CER: 0.4878" not in body
+    assert "Average WER: 0.7812" not in body
 
 
 def test_transform_report_body_injects_legend_immediately_after_metrics():
@@ -434,10 +434,13 @@ def test_transform_report_body_injects_legend_immediately_after_metrics():
 
 def test_transform_report_body_labels_diff_columns_ground_truth_and_ocr():
     body = pages.transform_report_body(_page_0_body())
-    # one header per differences section (Character differences, Word
-    # differences) — not one per .row.
+    # One injected header per differences section (Character
+    # differences, Word differences) — not one per .row. The fixture
+    # was regenerated with --differences (item A), so its own
+    # "Found differences" mistake tables also carry a plain <th>OCR</th>
+    # each — 2 injected headers + 2 raw table headers.
     assert body.count("Ground truth") == 2
-    assert body.count(">OCR<") == 2
+    assert body.count(">OCR<") == 4
     char_h2 = body.index("Character differences")
     char_header = body.index("Ground truth")
     char_row = body.index('<div class="row">')
@@ -449,3 +452,126 @@ def test_transform_report_body_does_not_touch_fixture_file_on_disk():
     before = path.read_bytes()
     pages.transform_report_body(_extract_body(before.decode("utf-8")))
     assert path.read_bytes() == before
+
+
+# --- Item A: the differences-enabled fixtures gain mistake tables ---------
+
+
+def test_transform_report_body_preserves_page_mistake_tables():
+    # page_0.html was regenerated with --differences (item A); its
+    # per-page "Found differences" tables must survive the transform.
+    body = pages.transform_report_body(_page_0_body())
+    assert "Found differences (character)" in body
+    assert "Found differences (word)" in body
+
+
+def test_transform_report_body_preserves_summary_mistake_tables():
+    # The 4-page fixture batch (item A.3) carries repeated e→c and
+    # l→1 mistakes, so the summary's common-mistakes tables are
+    # non-empty — not the "averages plus blank space" bug the amendment
+    # exists to fix.
+    body = pages.transform_report_body(_summary_body())
+    assert "Found differences (character)" in body
+    assert "Found differences (word)" in body
+    assert ">e<" in body and ">c<" in body  # a real e→c mistake row
+
+
+def test_style_scopes_mistake_table_occurrences_column_numerically():
+    # Item A.4: the raw mistake tables are plain, unclassed <table>
+    # markup; the shell right-aligns their 3rd/last (Occurrences)
+    # column structurally, without touching the 5-column scores table.
+    assert ':has(thead th:nth-child(3):last-child)' in pages._STYLE
+    assert "text-align: right" in pages._STYLE
+
+
+# --- Item B: trim the report's own bare gt/ocr path lines -----------------
+
+
+def test_transform_report_body_strips_raw_gt_ocr_path_lines():
+    body = pages.transform_report_body(_page_0_body())
+    assert "page_0.gt.txt" not in body
+    assert "fixtures/text/page_0.txt" not in body
+    assert "<h2>Metrics</h2>" in body  # the section right after survives
+
+
+# --- Item C: summary repairs -----------------------------------------------
+
+
+def test_transform_report_body_summary_legend_reads_batch_average():
+    body = pages.transform_report_body(_summary_body())
+    assert (
+        "The percentages here are averages across the whole batch."
+        in body
+    )
+    assert "this page's raw scores" not in body
+
+
+def test_transform_report_body_page_legend_still_reads_per_page():
+    body = pages.transform_report_body(_page_0_body())
+    assert "this page's raw scores." in body
+    assert "averages across the whole batch" not in body
+
+
+def test_transform_report_body_summary_legend_sits_outside_the_row():
+    body = pages.transform_report_body(_summary_body())
+    row_close = body.index('<div class="row cer">')
+    row_close = body.index("</div>", row_close)
+    legend_idx = body.index("averages across the whole batch")
+    assert row_close < legend_idx
+
+
+def test_transform_report_body_strips_summary_own_heading():
+    body = pages.transform_report_body(_summary_body())
+    assert "<h1>" not in body
+    assert "Summary of all reports" not in body
+
+
+def test_report_page_summary_heading_reads_batch_summary():
+    page = pages.report_page("run-001", "summary", "<p>BODY</p>")
+    assert "<h1>Technical report: batch summary</h1>" in page
+
+
+def test_report_page_non_summary_heading_unchanged():
+    page = pages.report_page("run-001", "page_0", "<p>BODY</p>")
+    assert "<h1>Technical report: page_0</h1>" in page
+
+
+# --- Item D: sortable mistake tables, first-party script only -------------
+
+
+def test_transform_report_body_summary_gets_sort_script():
+    body = pages.transform_report_body(_summary_body())
+    assert "<script>" in body
+    assert "aria-sort" in body
+
+
+def test_transform_report_body_page_gets_no_sort_script():
+    # D is summary-only.
+    body = pages.transform_report_body(_page_0_body())
+    assert "<script>" not in body
+
+
+def test_transform_report_body_sort_script_is_first_party_after_strip():
+    # Order matters: the raw report's own CDN/jQuery script is stripped
+    # first, then ours is appended — never the reverse.
+    body = pages.transform_report_body(_summary_body())
+    assert "jquery" not in body
+    assert "cdnjs" not in body
+    script_idx = body.index("<script>")
+    assert "aria-sort" in body[script_idx:]
+
+
+def test_transform_report_body_sort_script_wires_keyboard_activation():
+    body = pages.transform_report_body(_summary_body())
+    assert "keydown" in body
+    assert "Enter" in body
+
+
+# --- Mandatory bugfix: [hidden] must win over more specific display rules -
+
+
+def test_style_hidden_attribute_wins_over_display_flex():
+    # .picked has display:flex; without a global [hidden] override its
+    # hidden confirmation row (checkmark included) bleeds through on
+    # the empty form.
+    assert "[hidden] { display: none !important; }" in pages._STYLE

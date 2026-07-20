@@ -28,6 +28,10 @@ _STYLE = """
   h2 { font-size: var(--fs-large); margin: var(--space-4) 0 var(--space-2); }
   h3 { font-size: var(--fs-base); margin: var(--space-3) 0 var(--space-2); }
   a { color: var(--color-accent); }
+  /* Correct per the HTML spec, global: without this, a more specific
+     display rule elsewhere (e.g. .picked's display:flex) can override
+     the [hidden] attribute and bleed hidden content through. */
+  [hidden] { display: none !important; }
   fieldset { margin: var(--space-3) 0; border: 1px solid #767676;
              border-radius: 4px; }
   legend { font-weight: 600; }
@@ -139,6 +143,16 @@ _STYLE = """
                    text-decoration-thickness: 2px; }
   .section h2 { font-size: var(--fs-large);
                 margin: var(--space-4) 0 var(--space-2); }
+  /* A: the summary's "Found differences" (common-mistakes) tables are
+     plain, unclassed <table> markup — the generic table/th/td rules
+     above already apply. The one gap: their Occurrences column (the
+     3rd and last header) isn't marked up with td.num like our own
+     tables, so right-align it structurally via :has(), matched only
+     when the header row has exactly three columns (GT/OCR/
+     Occurrences) — never the five-column per-page scores table. */
+  .section table:has(thead th:nth-child(3):last-child) td:last-child {
+    text-align: right; font-variant-numeric: tabular-nums;
+  }
 """
 
 
@@ -516,26 +530,51 @@ def results_page(
 
 # --- F20: serve-time transform of wrapped report bodies -------------------
 # The exact, closed transform list authorized by the 2026-07-19 spec
-# amendment. Pure function of the extracted body string; the report file
-# on disk is never touched — wrapped_report() calls this in-memory only.
+# amendment, plus the 2026-07-19b stats-round additions (B/C/D below).
+# Pure function of the extracted body string; the report file on disk is
+# never touched — wrapped_report() calls this in-memory only.
 
 _SCRIPT_TAG = re.compile(r"<script\b[^>]*>.*?</script>", re.S | re.I)
 _LINK_TAG = re.compile(r"<link\b[^>]*/?>", re.I)
 
+# B: dinglehopper's own report opens with two bare, unwrapped absolute
+# gt/ocr paths ("<div class=\"container\">\n\n<PATH><br>\n<PATH>\n\n..."
+# right before "<h2>Metrics</h2>"). Our shell H1 already names the page,
+# so these are pure noise — matched narrowly (no angle brackets on
+# either line) so nothing else in the body can be mistaken for them.
+_RAW_PATH_LINES = re.compile(r"\n[^\n<>]+<br>\n[^\n<>]+\n(?=\s*<h2>Metrics</h2>)")
+
 _METRIC_LINE = re.compile(
     r"<p>(?P<avg>Average )?(?P<kind>CER|WER): (?P<value>\d+(?:\.\d+)?)</p>"
 )
-_METRIC_BLOCK = re.compile(
-    r"(?:[ \t]*" + _METRIC_LINE.pattern + r"[ \t]*\n?)+"
+_FORMATTED_METRIC_LINE = re.compile(
+    r"<p>(?:Average )?(?:Character error rate \(CER\)|"
+    r"Word error rate \(WER\)): \d+(?:\.\d+)?%</p>"
+)
+_FORMATTED_METRIC_BLOCK = re.compile(
+    r"(?:[ \t]*" + _FORMATTED_METRIC_LINE.pattern + r"[ \t]*\n?)+"
 )
 _METRIC_LABELS = {
     "CER": "Character error rate (CER)",
     "WER": "Word error rate (WER)",
 }
-_METRIC_LEGEND = (
+_METRIC_LEGEND_PREFIX = (
     '<p class="note">CER counts character-level differences; WER counts '
     "word-level differences. Lower is better. The percentages here are "
-    "this page's raw scores.</p>"
+)
+# C: the summary rolls its two Average lines up inside a two-column
+# grid row (`.row cer`, styled by the generic `.section .row` grid
+# rule) — injecting the legend inside that div made it fight the
+# metrics for a grid column. The batch-average copy is also wrong for
+# a single page's raw score, so both the placement and wording are
+# summary-specific.
+_METRIC_ROW = re.compile(r'<div class="row cer">.*?</div>', re.S)
+
+# C: the summary's own "<h1>Summary of all reports</h1>" duplicates our
+# shell H1 ("Technical report: batch summary") — drop the report's row
+# entirely rather than leave an empty grid cell behind.
+_SUMMARY_HEADING_ROW = re.compile(
+    r'<div class="row">\s*<h1>[^<]*</h1>\s*</div>\s*'
 )
 
 _SECTION_HEADER_ROW = re.compile(r'(<h2>[^<]*</h2>\s*)(<div class="row">)')
@@ -543,6 +582,51 @@ _DIFF_HEADER = (
     '<div class="row diff-header"><div class="col-md-6">Ground truth</div>'
     '<div class="col-md-6">OCR</div></div>'
 )
+
+# D: first-party (not CDN) sort behavior for the summary's two
+# "Found differences" tables — the raw tables' own jQuery sort script
+# was already stripped above. Keyboard accessible via tabindex +
+# Enter/Space, mirrors click. aria-sort toggles on the active header.
+_SORT_SCRIPT = """<script>
+(function () {
+  function cellText(cell) { return cell.textContent.trim(); }
+  function sortRows(table, colIndex, ascending) {
+    var tbody = table.tBodies[0];
+    if (!tbody) return;
+    var rows = Array.prototype.slice.call(tbody.rows);
+    rows.sort(function (a, b) {
+      var av = cellText(a.cells[colIndex]);
+      var bv = cellText(b.cells[colIndex]);
+      var an = parseFloat(av);
+      var bn = parseFloat(bv);
+      var cmp = (!isNaN(an) && !isNaN(bn)) ? an - bn : av.localeCompare(bv);
+      return ascending ? cmp : -cmp;
+    });
+    rows.forEach(function (row) { tbody.appendChild(row); });
+  }
+  function activate(th) {
+    var table = th.closest('table');
+    if (!table) return;
+    var headers = Array.prototype.slice.call(th.parentNode.children);
+    var index = headers.indexOf(th);
+    var ascending = th.getAttribute('aria-sort') !== 'ascending';
+    headers.forEach(function (h) { h.removeAttribute('aria-sort'); });
+    th.setAttribute('aria-sort', ascending ? 'ascending' : 'descending');
+    sortRows(table, index, ascending);
+  }
+  document.querySelectorAll('table thead th').forEach(function (th) {
+    th.tabIndex = 0;
+    th.setAttribute('role', 'button');
+    th.addEventListener('click', function () { activate(th); });
+    th.addEventListener('keydown', function (evt) {
+      if (evt.key === 'Enter' || evt.key === ' ') {
+        evt.preventDefault();
+        activate(th);
+      }
+    });
+  });
+})();
+</script>"""
 
 
 def _format_metric_line(match: re.Match) -> str:
@@ -553,41 +637,68 @@ def _format_metric_line(match: re.Match) -> str:
     return f"<p>{label}: {pct:.1f}%</p>"
 
 
-def _replace_metric_block(match: re.Match) -> str:
-    transformed = _METRIC_LINE.sub(_format_metric_line, match.group(0))
-    return transformed.rstrip() + "\n" + _METRIC_LEGEND + "\n"
-
-
 def _inject_diff_header(match: re.Match) -> str:
     return f"{match.group(1)}{_DIFF_HEADER}\n{match.group(2)}"
 
 
 def transform_report_body(inner_html: str) -> str:
     """Reshape an extracted dinglehopper report body for the wrapped
-    shell (F20). Exactly the amendment's list, in order:
+    shell (F20, amended 2026-07-19b). In order:
 
     1. Strip CDN <script src>, inline <script>, and any <link> tags —
        the line tooltips already work via native title attributes.
-    2. Rewrite bare/Average CER|WER decimal lines to one-decimal
+    2. (B) Drop the report's own bare gt/ocr path lines — our shell H1
+       already names the page.
+    3. (C) Drop the summary's own "Summary of all reports" H1 — our
+       shell H1 covers it.
+    4. Rewrite bare/Average CER|WER decimal lines to one-decimal
        percentages.
-    3. Inject a one-line CER/WER legend right after those lines.
-    4. Label the diff columns Ground truth / OCR at the table itself.
+    5. (C) Inject a one-line CER/WER legend right after those lines,
+       outside the two-column metrics row for the summary, with
+       context-aware copy (per-page raw score vs. batch average).
+    6. Label the diff columns Ground truth / OCR at the table itself.
+    7. (D) For the summary only: append a small first-party script
+       that makes the "Found differences" table headers sortable.
 
-    (5, the shell CSS for the report's own classes, lives in _STYLE.)
+    (Shell CSS for the report's own classes lives in _STYLE.)
     """
+    is_summary = bool(re.search(r"Average (?:CER|WER):", inner_html))
+    legend_suffix = (
+        "averages across the whole batch."
+        if is_summary
+        else "this page's raw scores."
+    )
+    legend = f"{_METRIC_LEGEND_PREFIX}{legend_suffix}</p>"
+
     html = _SCRIPT_TAG.sub("", inner_html)
     html = _LINK_TAG.sub("", html)
-    html = _METRIC_BLOCK.sub(_replace_metric_block, html)
+    html = _RAW_PATH_LINES.sub("\n", html)
+    html = _SUMMARY_HEADING_ROW.sub("", html)
+    html = _METRIC_LINE.sub(_format_metric_line, html)
+
+    if _METRIC_ROW.search(html):
+        html = _METRIC_ROW.sub(lambda m: f"{m.group(0)}\n{legend}\n", html)
+    else:
+        html = _FORMATTED_METRIC_BLOCK.sub(
+            lambda m: f"{m.group(0).rstrip()}\n{legend}\n", html
+        )
+
     html = _SECTION_HEADER_ROW.sub(_inject_diff_header, html)
+
+    if is_summary:
+        html = f"{html.rstrip()}\n{_SORT_SCRIPT}"
     return html
 
 
 def report_page(run_id: str, name: str, inner_html: str) -> str:
     run = escape(run_id)
+    # C: the URL segment "summary" reads as a raw label in the H1;
+    # name validation upstream (wrapped_report's regex) is untouched.
+    heading = "batch summary" if name == "summary" else escape(name)
     body = (
         # GOV.UK back-link convention: the back link sits above the H1.
         f'<p class="note"><a href="/runs/{run}">Back to results</a></p>'
-        f"<h1>Technical report: {escape(name)}</h1>"
+        f"<h1>Technical report: {heading}</h1>"
         f'<p class="note">Run <code>{run}</code></p>'
         f'<div class="section">{inner_html}</div>'
     )
