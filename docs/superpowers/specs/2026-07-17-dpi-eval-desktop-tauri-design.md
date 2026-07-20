@@ -203,6 +203,18 @@ set — "additive only" means exactly these, each with tests:
    directly with the root-cause evidence in front of him (diag-v2
    replay, CI run 29691628333).
 
+6. **Amendment 2026-07-19b — engine fence, second narrow exception
+   (approved by Trevor: "Do A through D").** `run_page` additionally
+   passes dinglehopper's `--differences` option in the same argv
+   (exact invocation form verified empirically against the pinned
+   version — the option is a click BOOL value option, not a bare
+   flag). Purpose: per-page reports then carry character/word
+   difference data, and `dinglehopper-summarize` aggregates
+   common-mistakes tables the batch summary currently lacks entirely
+   (discovered 2026-07-19: a 4-page batch summary rendered as
+   averages plus blank space). Scope: this one argv addition in
+   `run_page`; nothing else in engine files.
+
 Existing 37 tests stay green throughout.
 
 ## Bundling risks (named, each with its gate)
