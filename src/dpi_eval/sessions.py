@@ -10,11 +10,13 @@ import json
 import os
 import re
 import secrets
+import shutil
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dpi_eval.adapter import hocr_to_text, sniff_format
-from dpi_eval.alignment import align
+from dpi_eval.alignment import OCR_STAGE_EXTENSIONS, align
 from dpi_eval.conventions import CONVENTIONS_VERSION, normalize
 from dpi_eval.iiif import CanvasRecord, make_stem
 
@@ -325,3 +327,101 @@ def draft_text(session: dict, page: dict) -> str:
     if detect_draft_format(path) == "hocr":
         return hocr_to_text(path)
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _staging(root: Path, session_id: str) -> Path:
+    return session_dir(root, session_id) / "staging"
+
+
+def clear_staging(root: Path, session_id: str) -> None:
+    shutil.rmtree(_staging(root, session_id), ignore_errors=True)
+
+
+def stage_ocr(root: Path, session_id: str, files: list[tuple[str, bytes]]) -> dict:
+    session = _mutable(root, session_id)
+    clear_staging(root, session_id)
+    ocr_dir = _staging(root, session_id) / "ocr"
+    ocr_dir.mkdir(parents=True)
+    for name, data in files:
+        flat = Path(name).name
+        if flat.startswith("."):
+            continue
+        (ocr_dir / flat).write_bytes(data)
+    by = "index" if session["source"]["type"] == "iiif" else "stem"
+    result = align(session["pages"], [p.name for p in ocr_dir.iterdir()], by=by)
+    (_staging(root, session_id) / "alignment.json").write_text(
+        json.dumps(result, indent=2), encoding="utf-8")
+    return result
+
+
+def stage_for_grade(
+    root: Path, session_id: str, overrides: dict[str, str]
+) -> tuple[Path, Path]:
+    session = _mutable(root, session_id)
+    problems = reconcile(root, session)
+    if problems:
+        raise SessionError(
+            "Some pages need attention before grading (transcriptions on "
+            "disk that don't match the session record). Resolve them from "
+            "the session page first.")
+    alignment_file = _staging(root, session_id) / "alignment.json"
+    if not alignment_file.exists():
+        raise SessionError("Upload or pick the OCR folder first (preview step).")
+    mapping = json.loads(alignment_file.read_text(encoding="utf-8"))["matched"]
+    mapping.update({k: v for k, v in overrides.items() if v})
+
+    saved_pages = [p for p in session["pages"] if p["status"] == "saved"]
+    if not saved_pages:
+        raise SessionError("No saved transcriptions to grade yet.")
+
+    staged_gt = _staging(root, session_id) / "grade" / "gt"
+    staged_ocr = _staging(root, session_id) / "grade" / "ocr"
+    for directory in (staged_gt, staged_ocr):
+        shutil.rmtree(directory, ignore_errors=True)
+        directory.mkdir(parents=True)
+    ocr_src = _staging(root, session_id) / "ocr"
+    for page in saved_pages:
+        shutil.copy2(gt_path(root, session, page), staged_gt / f"{page['stem']}.gt.txt")
+        ocr_name = mapping.get(page["stem"])
+        if ocr_name and (ocr_src / ocr_name).exists():
+            ext = OCR_STAGE_EXTENSIONS.get(Path(ocr_name).suffix.lower())
+            if ext:
+                shutil.copy2(ocr_src / ocr_name, staged_ocr / f"{page['stem']}{ext}")
+    return staged_gt, staged_ocr
+
+
+def export_session(root: Path, session_id: str) -> Path:
+    session = load_session(root, session_id)
+    problems = reconcile(root, session)
+    if problems:
+        raise SessionError("Resolve needs-attention pages before exporting.")
+    collection = session["collection"] or "_unsorted"
+    bundle_root = session_dir(root, session_id) / "export"
+    shutil.rmtree(bundle_root, ignore_errors=True)
+    bundle = bundle_root / collection / session_id
+    (bundle / "gt").mkdir(parents=True)
+    for page in session["pages"]:
+        if page["status"] == "saved":
+            shutil.copy2(gt_path(root, session, page), bundle / "gt" / f"{page['stem']}.gt.txt")
+    sidecar = {
+        "session_id": session_id,
+        "collection": session["collection"],
+        "arm": session["mode"],
+        "conventions_version": session["conventions_version"],
+        "source": session["source"],
+        "pages": [
+            {"stem": p["stem"], "status": p["status"], "arm": session["mode"],
+             "no_text_reason": p["no_text_reason"], "canvas_id": p["canvas_id"],
+             "seconds_elapsed": p["seconds_elapsed"],
+             "seconds_active": p["seconds_active"], "flagged": p["flagged"],
+             "note": p["note"], "saved_at": p["saved_at"]}
+            for p in session["pages"]
+        ],
+    }
+    (bundle / "transcriptions.json").write_text(
+        json.dumps(sidecar, indent=2), encoding="utf-8")
+    zip_path = session_dir(root, session_id) / f"dpi-eval-gt-{session_id}"
+    archive = shutil.make_archive(str(zip_path), "zip", root_dir=bundle_root)
+    with zipfile.ZipFile(archive):  # smoke-validate the archive
+        pass
+    return Path(archive)
