@@ -1,0 +1,20 @@
+{
+  "@context": "http://iiif.io/api/presentation/3/context.json",
+  "id": "https://iiif.example.edu/m/2",
+  "type": "Manifest",
+  "items": [
+    {"id": "https://iiif.example.edu/c3/0", "type": "Canvas",
+     "label": {"en": ["Front page"]},
+     "items": [{"type": "AnnotationPage", "items": [
+       {"type": "Annotation", "body": {
+         "id": "https://iiif.example.edu/i3/0/full/max/0/default.jpg",
+         "type": "Image",
+         "service": [{"id": "https://iiif.example.edu/i3/0", "type": "ImageService3"}]}}]}]},
+    {"id": "https://iiif.example.edu/c3/1", "type": "Canvas",
+     "label": {"ja": ["日本語"]},
+     "items": [{"type": "AnnotationPage", "items": [
+       {"type": "Annotation", "body": {
+         "id": "https://iiif.example.edu/i3/1/full/max/0/default.jpg",
+         "type": "Image"}}]}]}
+  ]
+}
