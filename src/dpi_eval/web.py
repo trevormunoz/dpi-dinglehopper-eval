@@ -17,7 +17,7 @@ import webbrowser
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -26,7 +26,8 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from dpi_eval import pages
+from dpi_eval import iiif, pages
+from dpi_eval import sessions as sess
 from dpi_eval.pairing import OCR_EXTENSIONS, discover_pairs
 from dpi_eval.runner import run_batch
 
@@ -398,6 +399,62 @@ def create_app(
             media_type="application/zip",
             filename=f"dpi-eval-{run_id}-reports.zip",
         )
+
+    trans_root = sess.transcriptions_root(base_dir)
+
+    def _token() -> str:
+        return os.environ.get("DPI_EVAL_TOKEN") or ""
+
+    @app.get("/transcribe", response_class=HTMLResponse)
+    def transcribe_home():
+        return pages.transcribe_home_page(sess.list_sessions(trans_root), _token())
+
+    @app.post("/transcribe/sessions", response_class=HTMLResponse)
+    def transcribe_create(
+        request: Request,
+        token: str = Form(default=None),
+        source_type: str = Form(...),
+        folder: str = Form(default=""),
+        manifest_url: str = Form(default=""),
+        mode: str = Form(default="from_scratch"),
+        draft_folder: str = Form(default=""),
+        collection: str = Form(default=""),
+    ):
+        _check_token(request, token)
+        drafts = Path(draft_folder) if draft_folder.strip() else None
+        try:
+            if source_type == "local":
+                session = sess.create_local_session(
+                    trans_root, Path(folder), mode, collection, drafts)
+            else:
+                records = iiif.parse_manifest(iiif.fetch_manifest(manifest_url))
+                session = sess.create_iiif_session(
+                    trans_root, manifest_url, records, mode, collection, drafts)
+        except (sess.SessionError, iiif.IIIFError) as exc:
+            return HTMLResponse(pages.error_page(str(exc)), status_code=400)
+        return pages.selection_page(session, _token())
+
+    @app.post("/transcribe/sessions/{sid}/confirm")
+    def transcribe_confirm(
+        sid: str, request: Request,
+        token: str = Form(default=None),
+        pages_selected: list[str] = Form(default=[], alias="pages"),
+    ):
+        _check_token(request, token)
+        try:
+            sess.confirm_session(trans_root, sid, [int(i) for i in pages_selected])
+        except sess.SessionError as exc:
+            return HTMLResponse(pages.error_page(str(exc)), status_code=400)
+        return RedirectResponse(f"/transcribe/sessions/{sid}", status_code=303)
+
+    @app.get("/transcribe/sessions/{sid}", response_class=HTMLResponse)
+    def transcribe_session(sid: str):
+        try:
+            session = sess.load_session(trans_root, sid)
+        except sess.SessionError:
+            return HTMLResponse(pages.error_page("No such session."), status_code=404)
+        problems = sess.reconcile(trans_root, session)
+        return pages.session_page(session, problems, _token())
 
     return app
 

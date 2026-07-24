@@ -187,6 +187,7 @@ def form_page(*, token: str | None = None) -> str:
     # the token is injected via `meta` in the document head instead.
     body = """
 <h1>Grade OCR against ground truth</h1>
+<p><a href="/transcribe">Transcribe a sample</a></p>
 <div id="grading-status" class="grading-status" hidden>
   <p class="grading-status-headline"><span id="grading-status-msg"
       aria-live="polite"></span><span id="grading-elapsed"
@@ -714,3 +715,120 @@ def error_page(message: str, details: tuple[str, ...] = ()) -> str:
         '<p><a href="/">Back to the form</a></p>'
     )
     return _document("dpi-eval — problem", body)
+
+
+def _hidden_token(token: str) -> str:
+    return f'<input type="hidden" name="token" value="{escape(token or "")}">'
+
+
+def transcribe_home_page(sessions: list[dict], token: str) -> str:
+    rows = "".join(
+        f'<li><a href="/transcribe/sessions/{escape(s["id"])}">{escape(s["id"])}</a>'
+        f' — {escape(s.get("collection") or "no collection")}'
+        f' — {escape(s["mode"])} — {escape(s["state"])}</li>'
+        for s in sessions
+    ) or "<li>No sessions yet.</li>"
+    body = f"""
+    <h1>Transcribe</h1>
+    <h2>Sessions in progress</h2>
+    <ul>{rows}</ul>
+    <h2>Start a new session</h2>
+    <form method="post" action="/transcribe/sessions">
+      {_hidden_token(token)}
+      <p><label>Source type
+        <select name="source_type">
+          <option value="local">Local image folder (desktop)</option>
+          <option value="iiif">IIIF manifest URL</option>
+        </select></label></p>
+      <p><label>Local folder path <input name="folder"></label></p>
+      <p><label>Manifest URL <input name="manifest_url" placeholder="https://…"></label></p>
+      <p><label>Mode
+        <select name="mode">
+          <option value="from_scratch">Type from scratch</option>
+          <option value="corrected">Correct a machine draft</option>
+        </select></label></p>
+      <p><label>Draft folder (correction mode, desktop) <input name="draft_folder"></label></p>
+      <p><label>Collection / handle (optional) <input name="collection"></label></p>
+      <p><button type="submit">List pages</button></p>
+    </form>
+    """
+    return _document("Transcribe — dpi-eval", body)
+
+
+def selection_page(session: dict, token: str) -> str:
+    boxes = "".join(
+        f'<li><label><input type="checkbox" name="pages" '
+        f'value="{p["source_index"]}" checked> '
+        f'{escape(p["stem"])} {escape(p.get("label") or "")}</label></li>'
+        for p in session["pages"]
+    )
+    body = f"""
+    <h1>Select the sample pages</h1>
+    <p data-session-id="{escape(session["id"])}">Untick pages that are not part of
+    this sample. The queue is exactly what you tick.</p>
+    <form method="post" action="/transcribe/sessions/{escape(session["id"])}/confirm">
+      {_hidden_token(token)}
+      <p><button type="button" onclick="document.querySelectorAll('[name=pages]').forEach(b => b.checked = !b.checked)">Invert selection</button></p>
+      <ul>{boxes}</ul>
+      <p><button type="submit">Start transcribing</button></p>
+    </form>
+    """
+    return _document("Select pages — dpi-eval", body)
+
+
+def session_page(session: dict, problems: list[dict], token: str) -> str:
+    problem_stems = {p["stem"]: p["problem"] for p in problems}
+    rows = []
+    for p in session["pages"]:
+        state = p["status"] + (" ⚑" if p["flagged"] else "")
+        attention = ""
+        if p["stem"] in problem_stems:
+            attention = (
+                f' <strong>needs attention ({escape(problem_stems[p["stem"]])})</strong>'
+                f' <form style="display:inline" method="post"'
+                f' action="/transcribe/sessions/{escape(session["id"])}/pages/{p["source_index"]}">'
+                f'{_hidden_token(token)}<input type="hidden" name="action" value="adopt">'
+                f'<button>Adopt</button></form>'
+                f' <form style="display:inline" method="post"'
+                f' action="/transcribe/sessions/{escape(session["id"])}/pages/{p["source_index"]}">'
+                f'{_hidden_token(token)}<input type="hidden" name="action" value="discard">'
+                f'<button>Discard</button></form>'
+            )
+        rows.append(
+            f'<tr><td><a href="/transcribe/sessions/{escape(session["id"])}/pages/{p["source_index"]}">'
+            f'{escape(p["stem"])}</a></td><td>{escape(state)}{attention}</td>'
+            f'<td>{p["seconds_elapsed"]}s</td></tr>')
+    saved = sum(1 for p in session["pages"] if p["status"] == "saved")
+    grade_bits = ""
+    if problems:
+        grade_bits = "<p>Grading is disabled until needs-attention pages are resolved.</p>"
+    elif saved == 0:
+        grade_bits = "<p>Grading is disabled until at least one page is saved.</p>"
+    else:
+        grade_bits = f"""
+        <form method="post" action="/transcribe/sessions/{escape(session["id"])}/grade/preview"
+              enctype="multipart/form-data">
+          {_hidden_token(token)}
+          <p><label>OCR folder path (desktop) <input name="ocr_folder"></label>
+             or upload files <input type="file" name="ocr_files" multiple></p>
+          <p><button type="submit">Preview grade alignment</button></p>
+        </form>"""
+    body = f"""
+    <h1>Session {escape(session["id"])}</h1>
+    <p>{escape(session.get("collection") or "No collection label")} —
+       mode: {escape(session["mode"])} — conventions v{session["conventions_version"]}.
+       Timing shown below is recorded with each save and visible here — nothing
+       is collected silently.</p>
+    <table><tr><th>Page</th><th>Status</th><th>Time</th></tr>{"".join(rows)}</table>
+    {grade_bits}
+    <form method="post" action="/transcribe/sessions/{escape(session["id"])}/clone">
+      {_hidden_token(token)}
+      <p><button type="submit">New session from this selection (other arm)</button></p>
+    </form>
+    <form method="post" action="/transcribe/sessions/{escape(session["id"])}/export">
+      {_hidden_token(token)}
+      <p><button type="submit">Export for repo</button></p>
+    </form>
+    <p><a href="/transcribe">Back to sessions</a></p>
+    """
+    return _document(f"Session {session['id']} — dpi-eval", body)
