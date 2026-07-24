@@ -78,30 +78,31 @@ def derive(master: Path, region: str, size: str, cache_dir: Path) -> Path:
         return out
 
     try:
-        source = Image.open(master)
+        with Image.open(master) as img:
+            img = img.convert("RGB")
+            if params["region"]:
+                x, y, w, h = params["region"]
+                if x >= img.width or y >= img.height or w == 0 or h == 0:
+                    raise DeriveError("Region out of bounds.", status=400)
+                img = img.crop((x, y, min(x + w, img.width), min(y + h, img.height)))
+            if params["size"]:
+                spec = params["size"]
+                if spec[0] == "w":
+                    ratio = spec[1] / img.width
+                    img = img.resize((spec[1], max(1, round(img.height * ratio))))
+                elif spec[0] == "h":
+                    ratio = spec[1] / img.height
+                    img = img.resize((max(1, round(img.width * ratio)), spec[1]))
+                else:  # confined !w,h
+                    img.thumbnail((spec[1], spec[2]))
+            tmp = out.with_suffix(".tmp")
+            img.save(tmp, format="JPEG", quality=90)
+            tmp.replace(out)
+    except DeriveError:
+        raise
     except Exception as exc:
         raise DeriveError(f"Cannot read master image {master.name}: {exc}",
                           status=500) from exc
-    with source as img:
-        img = img.convert("RGB")
-        if params["region"]:
-            x, y, w, h = params["region"]
-            if x >= img.width or y >= img.height or w == 0 or h == 0:
-                raise DeriveError("Region out of bounds.", status=400)
-            img = img.crop((x, y, min(x + w, img.width), min(y + h, img.height)))
-        if params["size"]:
-            spec = params["size"]
-            if spec[0] == "w":
-                ratio = spec[1] / img.width
-                img = img.resize((spec[1], max(1, round(img.height * ratio))))
-            elif spec[0] == "h":
-                ratio = spec[1] / img.height
-                img = img.resize((max(1, round(img.width * ratio)), spec[1]))
-            else:  # confined !w,h
-                img.thumbnail((spec[1], spec[2]))
-        tmp = out.with_suffix(".tmp")
-        img.save(tmp, format="JPEG", quality=90)
-        tmp.replace(out)
     return out
 
 

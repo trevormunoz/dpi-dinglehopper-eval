@@ -102,3 +102,18 @@ def test_cache_key_distinguishes_same_stem_different_masters(tmp_path):
     assert out_a != out_b
     with Image.open(out_b) as img:
         assert img.size == (60, 60)
+
+
+def test_decode_time_corruption_raises_derive_error(tmp_path):
+    good = tmp_path / "good.png"
+    Image.new("RGB", (50, 50), color=(1, 2, 3)).save(good)
+    data = bytearray(good.read_bytes())
+    # Corrupt bytes past the 33-byte signature+IHDR so the file still
+    # opens (or fails) but pixel decode breaks either way.
+    for i in range(40, min(len(data) - 8, 120)):
+        data[i] ^= 0xFF
+    bad = tmp_path / "bad.png"
+    bad.write_bytes(bytes(data))
+    with pytest.raises(DeriveError) as exc_info:
+        derive(bad, "full", "max", tmp_path / "d")
+    assert exc_info.value.status == 500
