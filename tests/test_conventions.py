@@ -35,3 +35,9 @@ def test_ensures_single_trailing_newline():
     out, changes = normalize("last line")
     assert out == "last line\n"
     assert changes == 1
+
+
+def test_multiple_trailing_newlines_count_as_one_change():
+    out, changes = normalize("last line\n\n\n")
+    assert out == "last line\n"
+    assert changes == 1

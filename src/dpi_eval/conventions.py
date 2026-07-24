@@ -40,8 +40,9 @@ def normalize(text: str) -> tuple[str, int]:
     if text and not text.endswith("\n"):
         text += "\n"
         changes += 1
-    while text.endswith("\n\n"):
-        text = text[:-1]
+    elif text.endswith("\n\n"):
+        while text.endswith("\n\n"):
+            text = text[:-1]
         changes += 1
 
     return text, changes
