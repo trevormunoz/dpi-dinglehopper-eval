@@ -26,7 +26,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from dpi_eval import iiif, pages
+from dpi_eval import derive, iiif, pages
 from dpi_eval import sessions as sess
 from dpi_eval.pairing import OCR_EXTENSIONS, discover_pairs
 from dpi_eval.runner import run_batch
@@ -455,6 +455,94 @@ def create_app(
             return HTMLResponse(pages.error_page("No such session."), status_code=404)
         problems = sess.reconcile(trans_root, session)
         return pages.session_page(session, problems, _token())
+
+    def _next_pending(session, after_index):
+        for page in session["pages"]:
+            if page["source_index"] > after_index and page["status"] == "pending":
+                return page["source_index"]
+        return None
+
+    @app.get("/transcribe/sessions/{sid}/pages/{n}", response_class=HTMLResponse)
+    def editor(sid: str, n: int, notice: str = ""):
+        try:
+            session = sess.load_session(trans_root, sid)
+            page = sess.page_by_index(session, n)
+        except sess.SessionError as exc:
+            return HTMLResponse(pages.error_page(str(exc)), status_code=404)
+        gt_file = sess.gt_path(trans_root, session, page)
+        gt_text = gt_file.read_text(encoding="utf-8") if gt_file.exists() else ""
+        draft = sess.draft_text(session, page) if session["mode"] == "corrected" else ""
+        total = len(session["pages"])
+        ordinal = [p["source_index"] for p in session["pages"]].index(n) + 1
+        return pages.editor_page(session, page, draft, gt_text, _token(),
+                                 position=f"Page {ordinal} of {total}",
+                                 notice=notice)
+
+    @app.post("/transcribe/sessions/{sid}/pages/{n}")
+    async def editor_action(sid: str, n: int, request: Request):
+        form = await request.form()
+        _check_token(request, form.get("token"))
+        action = form.get("action", "")
+        try:
+            if action == "save":
+                session, changes = sess.save_page(
+                    trans_root, sid, n, str(form.get("text", "")),
+                    elapsed=int(form.get("elapsed") or 0),
+                    active=int(form.get("active") or 0),
+                    nonce=str(form.get("nonce") or ""))
+                nxt = _next_pending(session, n)
+                target = (f"/transcribe/sessions/{sid}/pages/{nxt}"
+                          if nxt is not None else f"/transcribe/sessions/{sid}")
+                if changes:
+                    target += f"?notice={changes}+changes+applied+by+conventions+v{session['conventions_version']}"
+                return RedirectResponse(target, status_code=303)
+            if action == "no_text":
+                sess.mark_no_text(trans_root, sid, n, str(form.get("reason") or ""))
+            elif action == "flag":
+                sess.set_flag(trans_root, sid, n,
+                              form.get("flagged") is not None,
+                              str(form.get("note") or ""))
+            elif action in ("adopt", "discard"):
+                sess.resolve_attention(trans_root, sid, n, action)
+            else:
+                return HTMLResponse(pages.error_page("Unknown action."), status_code=400)
+        except sess.SessionError as exc:
+            return HTMLResponse(pages.error_page(str(exc)), status_code=400)
+        return RedirectResponse(f"/transcribe/sessions/{sid}", status_code=303)
+
+    def _local_master(session, page) -> Path:
+        return Path(session["source"]["path"]) / page["image_file"]
+
+    @app.get("/transcribe/sessions/{sid}/images/{n}/info.json")
+    def image_info(sid: str, n: int, request: Request):
+        try:
+            session = sess.load_session(trans_root, sid)
+            page = sess.page_by_index(session, n)
+            width, height = derive.image_dims(_local_master(session, page))
+        except (sess.SessionError, KeyError, OSError):
+            return JSONResponse({"error": "no such image"}, status_code=404)
+        base = f"http://{request.headers.get('host')}/transcribe/sessions/{sid}/images/{n}"
+        return JSONResponse(
+            derive.info_json(base, width, height),
+            media_type='application/ld+json;profile="http://iiif.io/api/image/3/context.json"')
+
+    @app.get("/transcribe/sessions/{sid}/images/{n}/{region}/{size}/{rotation}/{quality_fmt}")
+    def image_request(sid: str, n: int, region: str, size: str,
+                      rotation: str, quality_fmt: str):
+        if "." not in quality_fmt:
+            return JSONResponse({"error": "bad request"}, status_code=400)
+        quality, fmt = quality_fmt.rsplit(".", 1)
+        try:
+            session = sess.load_session(trans_root, sid)
+            page = sess.page_by_index(session, n)
+            derive.parse_params(region, size, rotation, quality, fmt)
+            cache = sess.session_dir(trans_root, sid) / "derivatives"
+            out = derive.derive(_local_master(session, page), region, size, cache)
+        except derive.DeriveError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=exc.status)
+        except (sess.SessionError, KeyError, OSError):
+            return JSONResponse({"error": "no such image"}, status_code=404)
+        return FileResponse(out, media_type="image/jpeg")
 
     return app
 

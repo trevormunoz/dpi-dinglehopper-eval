@@ -9,6 +9,7 @@ are the single source of truth.
 """
 
 import re
+import secrets
 from html import escape
 
 _STYLE = """
@@ -832,3 +833,89 @@ def session_page(session: dict, problems: list[dict], token: str) -> str:
     <p><a href="/transcribe">Back to sessions</a></p>
     """
     return _document(f"Session {session['id']} — dpi-eval", body)
+
+
+def editor_page(session, page, draft, gt_text, token, position, notice=""):
+    initial = gt_text or draft
+    banner = ""
+    if session["mode"] == "corrected" and not gt_text:
+        banner = ('<p><strong>Machine draft below — correct it faithfully; '
+                  'the OCR is what’s being graded.</strong></p>')
+    notice_html = f"<p><em>{escape(notice)}</em></p>" if notice else ""
+    sid, n = session["id"], page["source_index"]
+    image_src = (
+        f'{page["image_service"]}/full/!1200,1200/0/default.jpg'
+        if page.get("image_service")
+        else page.get("image_url")
+        or f"/transcribe/sessions/{sid}/images/{n}/full/!1200,1200/0/default.jpg")
+    full_src = (
+        f'{page["image_service"]}/full/max/0/default.jpg'
+        if page.get("image_service")
+        else page.get("image_url")
+        or f"/transcribe/sessions/{sid}/images/{n}/full/max/0/default.jpg")
+    body = f"""
+    <h1>{escape(page["stem"])} <small>({position})</small></h1>
+    {notice_html}{banner}
+    <div style="display:flex; gap:1rem; align-items:flex-start">
+      <div style="flex:1">
+        <img id="page-image" src="{image_src}" alt="Page image for {escape(page["stem"])}"
+             style="max-width:100%; cursor:zoom-in"
+             onerror="this.alt='Image failed to load — retry or flag this page.'">
+        <p><button type="button" onclick="document.getElementById('lightbox').showModal()">Enlarge</button></p>
+        <dialog id="lightbox" style="max-width:95vw; max-height:95vh; overflow:auto">
+          <img src="{full_src}" alt="Full resolution page image">
+          <form method="dialog"><button>Close</button></form>
+        </dialog>
+      </div>
+      <form style="flex:1" method="post"
+            action="/transcribe/sessions/{sid}/pages/{n}">
+        {_hidden_token(token)}
+        <input type="hidden" name="action" value="save">
+        <input type="hidden" name="elapsed" id="elapsed" value="0">
+        <input type="hidden" name="active" id="active" value="0">
+        <input type="hidden" name="nonce" value="{secrets.token_hex(8)}">
+        <textarea name="text" rows="30" style="width:100%; font-family:monospace"
+                  spellcheck="false" autocorrect="off" autocapitalize="off"
+                  autocomplete="off">{escape(initial)}</textarea>
+        <p>Press Enter at the end of each printed line (line-for-line).</p>
+        <p><button type="submit">Save &amp; next</button></p>
+      </form>
+    </div>
+    <form method="post" action="/transcribe/sessions/{sid}/pages/{n}">
+      {_hidden_token(token)}
+      <input type="hidden" name="action" value="no_text">
+      <label>No text on this page:
+        <select name="reason">
+          <option value="">— pick why —</option>
+          <option value="blank">Blank page</option>
+          <option value="image_only">Image only</option>
+          <option value="illegible">Illegible</option>
+        </select></label>
+      <button type="submit">Mark</button>
+    </form>
+    <form method="post" action="/transcribe/sessions/{sid}/pages/{n}">
+      {_hidden_token(token)}
+      <input type="hidden" name="action" value="flag">
+      <label><input type="checkbox" name="flagged" {"checked" if page["flagged"] else ""}>
+        Flag for supervisor</label>
+      <input name="note" value="{escape(page["note"])}" placeholder="note">
+      <button type="submit">Update flag</button>
+    </form>
+    <p><a href="/transcribe/sessions/{sid}">Back to session</a></p>
+    <script>
+    (function () {{
+      var opened = Date.now(), lastInput = 0, active = 0;
+      var area = document.querySelector("textarea[name=text]");
+      area.addEventListener("input", function () {{
+        var now = Date.now();
+        if (lastInput && now - lastInput < 5000) active += now - lastInput;
+        lastInput = now;
+      }});
+      area.form.addEventListener("submit", function () {{
+        document.getElementById("elapsed").value = Math.round((Date.now() - opened) / 1000);
+        document.getElementById("active").value = Math.round(active / 1000);
+      }});
+    }})();
+    </script>
+    """
+    return _document(f"{page['stem']} — transcribe", body)
