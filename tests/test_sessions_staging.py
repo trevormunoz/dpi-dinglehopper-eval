@@ -83,3 +83,27 @@ def test_export_bundle_layout_and_sidecar(iiif_session):
     assert rows["p0001-page-1"]["no_text_reason"] == "illegible"
     assert rows["p0002-page-2"]["status"] == "pending"  # every selected page
     assert sidecar["conventions_version"] == load_session(root, sid)["conventions_version"]
+
+
+def test_stage_for_grade_rejects_dangling_override(iiif_session):
+    root, sid = iiif_session
+    save_page(root, sid, 0, "text\n", elapsed=1, active=1, nonce="a")
+    stage_ocr(root, sid, [("page_0.hocr", b"x")])
+    with pytest.raises(SessionError):
+        stage_for_grade(root, sid, {"p0000-page-0": "no-such-file.xml"})
+
+
+def test_export_flattens_hostile_collection_label(tmp_path):
+    root = transcriptions_root(tmp_path)
+    records = [CanvasRecord(
+        "https://x/c/0", "Page 0", "https://x/i/0/full/max/0/default.jpg", None)]
+    session = create_iiif_session(root, "https://x/m", records, "from_scratch", "../evil/name")
+    confirm_session(root, session["id"], [0])
+    save_page(root, session["id"], 0, "x\n", elapsed=1, active=1, nonce="n")
+    zip_path = export_session(root, session["id"])
+    with zipfile.ZipFile(zip_path) as zf:
+        names = zf.namelist()
+    assert names
+    for name in names:
+        assert ".." not in name and not name.startswith("/")
+        assert name.startswith("evil-name/")

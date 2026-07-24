@@ -370,6 +370,19 @@ def stage_for_grade(
     mapping = json.loads(alignment_file.read_text(encoding="utf-8"))["matched"]
     mapping.update({k: v for k, v in overrides.items() if v})
 
+    ocr_src = _staging(root, session_id) / "ocr"
+    for stem, ocr_name in overrides.items():
+        if not ocr_name:
+            continue
+        if not (ocr_src / ocr_name).exists():
+            raise SessionError(
+                f"Override for {stem} names {ocr_name}, which is not in the "
+                "staged OCR upload.")
+        if Path(ocr_name).suffix.lower() not in OCR_STAGE_EXTENSIONS:
+            raise SessionError(
+                f"Override for {stem} names {ocr_name}, which is not a "
+                "recognized OCR format (.hocr/.xml/.txt).")
+
     saved_pages = [p for p in session["pages"] if p["status"] == "saved"]
     if not saved_pages:
         raise SessionError("No saved transcriptions to grade yet.")
@@ -379,7 +392,6 @@ def stage_for_grade(
     for directory in (staged_gt, staged_ocr):
         shutil.rmtree(directory, ignore_errors=True)
         directory.mkdir(parents=True)
-    ocr_src = _staging(root, session_id) / "ocr"
     for page in saved_pages:
         shutil.copy2(gt_path(root, session, page), staged_gt / f"{page['stem']}.gt.txt")
         ocr_name = mapping.get(page["stem"])
@@ -390,12 +402,18 @@ def stage_for_grade(
     return staged_gt, staged_ocr
 
 
+def _safe_collection(label: str) -> str:
+    """Flatten a collection label to one safe path segment for export."""
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", label).strip("-.")
+    return slug or "_unsorted"
+
+
 def export_session(root: Path, session_id: str) -> Path:
     session = load_session(root, session_id)
     problems = reconcile(root, session)
     if problems:
         raise SessionError("Resolve needs-attention pages before exporting.")
-    collection = session["collection"] or "_unsorted"
+    collection = _safe_collection(session["collection"] or "_unsorted")
     bundle_root = session_dir(root, session_id) / "export"
     shutil.rmtree(bundle_root, ignore_errors=True)
     bundle = bundle_root / collection / session_id
