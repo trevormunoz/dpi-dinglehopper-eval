@@ -47,3 +47,23 @@ def test_fetch_rejects_non_https():
 def test_parse_rejects_manifest_with_no_canvases():
     with pytest.raises(IIIFError):
         parse_manifest({"@context": "x", "sequences": []})
+
+
+def test_fetch_manifest_happy_path_parses_json(monkeypatch):
+    import io
+    import urllib.request
+
+    class FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    def fake_urlopen(url, timeout=None):
+        assert url == "https://iiif.example.edu/m/1"
+        return FakeResponse(b'{"@context": "x", "sequences": []}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    doc = fetch_manifest("https://iiif.example.edu/m/1")
+    assert doc == {"@context": "x", "sequences": []}
