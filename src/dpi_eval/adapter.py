@@ -4,8 +4,12 @@ dinglehopper auto-detects ALTO/PAGE XML and falls back to plain text, so
 everything except hOCR passes through untouched. hOCR (e.g. from iiif_ocr)
 is converted to plain text, one line per ocr_line element.
 
-This shim is intentionally deletable: if dinglehopper gains hOCR support
-upstream (see docs/findings.md #2), remove this module and pass paths through.
+Deletability contract (amended 2026-07-24): if dinglehopper gains hOCR
+support upstream (docs/findings.md #2), the grading path can pass
+through — BUT sessions.py now also consumes hocr_to_text/sniff_format
+for correction-draft prefill, which needs actual text, not a path
+dinglehopper can parse. Deleting this module requires replacing that
+consumer too.
 """
 
 from pathlib import Path

@@ -13,9 +13,9 @@ import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dpi_eval.adapter import sniff_format
+from dpi_eval.adapter import hocr_to_text, sniff_format
 from dpi_eval.alignment import align
-from dpi_eval.conventions import CONVENTIONS_VERSION
+from dpi_eval.conventions import CONVENTIONS_VERSION, normalize
 from dpi_eval.iiif import CanvasRecord, make_stem
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".jp2"}
@@ -187,5 +187,141 @@ def confirm_session(root: Path, session_id: str, selected_indices: list[int]) ->
     keep = set(selected_indices)
     session["pages"] = [p for p in session["pages"] if p["source_index"] in keep]
     session["state"] = "active"
+    # gt/ is part of an active session's directory shape from the start,
+    # so crash-recovery scenarios (orphan GT files) can be detected even
+    # before the first save_page.
+    (session_dir(root, session_id) / "gt").mkdir(parents=True, exist_ok=True)
     save_session(root, session)
     return session
+
+
+NO_TEXT_REASONS = ("blank", "image_only", "illegible")
+
+
+def page_by_index(session: dict, source_index: int) -> dict:
+    for page in session["pages"]:
+        if page["source_index"] == source_index:
+            return page
+    raise SessionError("No such page in this session.")
+
+
+def gt_path(root: Path, session: dict, page: dict) -> Path:
+    return session_dir(root, session["id"]) / "gt" / f"{page['stem']}.gt.txt"
+
+
+def check_version(session: dict) -> None:
+    if session["conventions_version"] != CONVENTIONS_VERSION:
+        raise SessionError(
+            f"This session was created under conventions "
+            f"v{session['conventions_version']}; the app now runs "
+            f"v{CONVENTIONS_VERSION}. The session is read-only — export "
+            "what exists and start a new session."
+        )
+
+
+def _mutable(root: Path, session_id: str) -> dict:
+    session = load_session(root, session_id)
+    if session["state"] != "active":
+        raise SessionError("Session is not confirmed yet.")
+    check_version(session)
+    return session
+
+
+def save_page(
+    root: Path, session_id: str, source_index: int, text: str,
+    *, elapsed: int, active: int, nonce: str,
+) -> tuple[dict, int]:
+    session = _mutable(root, session_id)
+    page = page_by_index(session, source_index)
+    normalized, changes = normalize(text)
+    if not normalized.strip():
+        raise SessionError(
+            'The transcription is empty — use "No text on this page" instead.')
+    # Write order is fixed (spec): GT file first, session.json second.
+    target = gt_path(root, session, page)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".tmp")
+    tmp.write_text(normalized, encoding="utf-8")
+    os.replace(tmp, target)
+    page["status"] = "saved"
+    page["no_text_reason"] = None
+    page["saved_at"] = _now()
+    if nonce != page.get("last_nonce"):
+        page["seconds_elapsed"] += max(0, int(elapsed))
+        page["seconds_active"] += max(0, int(active))
+        page["last_nonce"] = nonce
+    save_session(root, session)
+    return session, changes
+
+
+def mark_no_text(root: Path, session_id: str, source_index: int, reason: str) -> dict:
+    if reason not in NO_TEXT_REASONS:
+        raise SessionError(
+            "Pick why there is no text: blank, image-only, or illegible.")
+    session = _mutable(root, session_id)
+    page = page_by_index(session, source_index)
+    target = gt_path(root, session, page)
+    if target.exists():
+        target.unlink()  # a retracted page must never be graded
+    page["status"] = "no_text"
+    page["no_text_reason"] = reason
+    page["saved_at"] = _now()
+    save_session(root, session)
+    return session
+
+
+def set_flag(root: Path, session_id: str, source_index: int,
+             flagged: bool, note: str) -> dict:
+    session = _mutable(root, session_id)
+    page = page_by_index(session, source_index)
+    page["flagged"] = bool(flagged)
+    page["note"] = note.strip()
+    save_session(root, session)
+    return session
+
+
+def reconcile(root: Path, session: dict) -> list[dict]:
+    """Compare gt/ against session.json. Grading is blocked while any
+    item is returned (stage_for_grade enforces)."""
+    problems = []
+    gt_dir = session_dir(root, session["id"]) / "gt"
+    on_disk = {p.name[: -len(".gt.txt")] for p in gt_dir.glob("*.gt.txt")} if gt_dir.exists() else set()
+    for page in session["pages"]:
+        if page["status"] == "saved" and page["stem"] not in on_disk:
+            problems.append({"stem": page["stem"], "problem": "missing_gt"})
+        if page["status"] != "saved" and page["stem"] in on_disk:
+            problems.append({"stem": page["stem"], "problem": "orphan_gt"})
+    return problems
+
+
+def resolve_attention(root: Path, session_id: str, source_index: int,
+                      action: str) -> dict:
+    session = _mutable(root, session_id)
+    page = page_by_index(session, source_index)
+    target = gt_path(root, session, page)
+    if action == "adopt":
+        if not target.exists():
+            raise SessionError("Nothing on disk to adopt for that page.")
+        page["status"] = "saved"
+        page["no_text_reason"] = None
+        page["saved_at"] = _now()
+    elif action == "discard":
+        if target.exists():
+            target.unlink()
+        page["status"] = "pending"
+        page["saved_at"] = None
+    else:
+        raise SessionError("Resolve with adopt or discard.")
+    save_session(root, session)
+    return session
+
+
+def draft_text(session: dict, page: dict) -> str:
+    if not session.get("draft_source") or not page.get("draft_file"):
+        return ""
+    path = Path(session["draft_source"]) / page["draft_file"]
+    if not path.exists():
+        return ""
+    if detect_draft_format(path) == "hocr":
+        return hocr_to_text(path)
+    return path.read_text(encoding="utf-8", errors="replace")
