@@ -227,7 +227,7 @@ def _check_token(request: Request, form_token: str | None = None) -> None:
     X-DPI-Eval-Token header or a form field; also 403 when unset."""
     token = os.environ.get("DPI_EVAL_TOKEN")
     supplied = request.headers.get("X-DPI-Eval-Token") or form_token
-    if not token or supplied != token:
+    if not token or not secrets.compare_digest(supplied or "", token):
         raise HTTPException(status_code=403)
 
 
