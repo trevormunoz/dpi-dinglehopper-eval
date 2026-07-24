@@ -1,6 +1,6 @@
 # Transcription editor — design spec
 
-Date: 2026-07-24 · Branch: `feat/dpi-eval-desktop` · Status: revised after PAR round 1 (3 critical / 9 serious findings incorporated), pending PAR round 2 and Trevor's review
+Date: 2026-07-24 · Branch: `feat/dpi-eval-desktop` · Status: revised after PAR rounds 1 and 2, pending Trevor's review
 
 ## Why this exists
 
@@ -10,59 +10,64 @@ Context documents: `docs/superpowers/2026-07-24-layers-scope-audit.md` (scope de
 
 ## What it is
 
-A student-facing transcription flow added to the existing dpi-eval web/desktop app. **Session model: source-as-queue with selection at create** — picking a source (a local folder of page images, desktop only; or a IIIF manifest URL, desktop or browser) lists the source's pages with checkboxes and a select-all; the session's queue is the selected subset. This is the sample-presentation mechanism: which pages to select stays protocol, presenting them is the app's job. The student steps page by page (image beside a plain-text editor), saves transcriptions normalized server-side, marks blank pages, and finishes with a one-click grade through the existing engine.
+A student-facing transcription flow added to the existing dpi-eval web/desktop app. **Session model: source-as-queue with selection at create** — picking a source (a local folder of page images, desktop only; or a IIIF manifest URL) lists the source's pages with checkboxes and a select-all; the session's queue is the selected subset. This is the sample-presentation mechanism: which pages to select stays protocol, presenting them is the app's job. The student steps page by page (image beside a plain-text editor), saves transcriptions normalized server-side, marks blank pages, and finishes with a one-click grade through the existing engine.
 
-## Decisions settled during the brainstorm and PAR round 1
+**Crossover support**: a session summary offers **"New session from this selection (other arm)"** — cloning the source and exact page selection with the opposite mode. The two-arm design runs the same pages through both arms; re-ticking an identical subset by hand is the mechanism most likely to silently break that, so the app provides the clone.
+
+## Decisions settled during the brainstorm and PAR rounds
 
 1. **Approach A** — new routes in the existing FastAPI app (`web.py`/`pages.py` idiom), not a separate tool, not a client-heavy JS app.
-2. **Editor surface is a plain `<textarea>`.** Tiptap was considered and rejected: it is a rich-text document model (ProseMirror block nodes) whose plain text is a serialization, while our artifact *is* plain text byte-for-byte; its no-build path is CDN ES modules, which the self-contained-pages rule forbids. There is no "more Tauri-native" option — Tauri's UI is the WKWebView, and all WKWebView failures to date were chrome-level (handled natively), never rendering. Upgrade path if the pilot shows need for visual affordances: CodeMirror 6 vendored into the wheelhouse. Tiptap does not become the right fit.
-3. **macOS text-substitution defenses are mandatory**: the editor field ships with `spellcheck="false"`, `autocorrect="off"`, `autocapitalize="off"`, and smart-quote/dash substitution disabled. System autocorrect silently rewriting a faithful transcription (straight → curly quote) is a conventions killer.
-4. **Conventions are enforced server-side in Python** (`conventions.py`), versioned, applied at save. Deterministic, testable, shared with the CLI.
-5. **The app records, the protocol assigns.** A session is created in one mode (`from_scratch` or `correction`) and stamps that arm on every transcription. Crossover design — who runs which mode over which pages — lives in the pilot protocol document, not in randomization code.
-6. **Correction-mode drafts: hOCR or plain text only in v1.** Drafts are paired to pages and normalized via the existing `adapter.py` (hOCR → text) or passed through (`.txt`). ALTO/PAGE XML draft folders are **rejected at session creation** with a clear message: `adapter.py` deliberately passes XML through for dinglehopper to auto-detect downstream, and the editor has no dinglehopper downstream — prefilling raw XML into a textarea is worse than refusing. Which engine produced the drafts is a pilot-protocol decision; punch-list #5's anchoring/circularity warning is documented there. **Blessed pilot path for IIIF sessions (Trevor, 2026-07-24): [iiif_ocr](https://github.com/aguilarm-umd/iiif_ocr)** — feed the same manifest to both tools; its PaddleOCR hOCR is what `adapter.py` normalizes, and PaddleOCR's independence from vendor engines contains the anchoring risk for vendor batches. Two stated limits: circularity bites precisely when the OCR under evaluation is itself iiif_ocr output (protocol, not software), and iiif_ocr is v2-only, so **v3-manifest sessions have no blessed draft source** until that changes.
-7. **Timing records two numbers, disclosed, accumulated.** Per page: `seconds_elapsed` (sum of page-open-to-save stints) and `seconds_active` (input-heartbeat time). Both **accumulate** across visits and re-saves — never replaced. The pilot's headline rekey-cost number is **elapsed** time, because the correction arm's dominant cost is reading the draft against the image, which active-typing time structurally undercounts. Known accepted loss: a stint abandoned before any save posts nothing. Timing is shown on the session summary the student can see — no silent telemetry.
-8. **IIIF rendering follows the parked option A**: plain IIIF Image API `<img>` (width-constrained), no OpenSeadragon; provenance is canvas-centric (stem → canvas ID), preserving the rail for future annotation write-back. The enlarged view is an **in-page lightbox overlay** (CSS/JS, self-contained) — never a navigation, which in the chromeless Tauri window would strand the student with no back button (the exact chrome-level WKWebView failure class already hit three times).
-9. **Browser scope (Trevor, PAR round 1)**: local-folder sessions are **desktop-only** — browsers cannot supply server-readable paths via `webkitdirectory`. Browser mode fully supports IIIF sessions (remote images render from URLs; the server runs locally in both modes).
+2. **Editor surface is a plain `<textarea>`.** Tiptap was considered and rejected: it is a rich-text document model (ProseMirror block nodes) whose plain text is a serialization, while our artifact *is* plain text byte-for-byte; its no-build path is CDN ES modules, which the self-contained-pages rule forbids. There is no "more Tauri-native" option — Tauri's UI is the webview, and all webview failures to date were chrome-level (handled natively), never rendering. Upgrade path if the pilot shows need for visual affordances: CodeMirror 6 vendored into the wheelhouse.
+3. **macOS text-substitution defenses are mandatory**: `spellcheck="false"`, `autocorrect="off"`, `autocapitalize="off"`, smart-quote/dash substitution disabled. System autocorrect silently rewriting a faithful transcription is a conventions killer.
+4. **Conventions are enforced server-side in Python** (`conventions.py`), versioned, applied at save.
+5. **The app records, the protocol assigns.** A session is created in one mode (`from_scratch` or `corrected`) and stamps that arm on every transcription. (Vocabulary matches the layers-audit object model.) Who runs which mode over which pages lives in the pilot protocol document; the clone-session affordance keeps the paired selection exact.
+6. **Correction-mode drafts: hOCR or plain text only in v1.** Drafts pair to pages **by the same alignment rules as grading** (below) and are normalized via `adapter.py` (hOCR → text) or passed through (`.txt`). ALTO/PAGE XML draft folders are **rejected at session creation**: detection is by XML root element (`alto`, `PcGts`) with extension as a hint only, so hOCR delivered as `.xml` still passes; the rejection logic lives in `sessions.py`, not the adapter. Rationale: `adapter.py` deliberately passes XML through for dinglehopper to auto-detect downstream, and the editor has no dinglehopper downstream. Which engine produced the drafts is a pilot-protocol decision; punch-list #5's anchoring warning is documented there. **Blessed pilot path for IIIF sessions (Trevor, 2026-07-24): [iiif_ocr](https://github.com/aguilarm-umd/iiif_ocr)** — feed the same manifest to both tools. Verified against its source: it writes `page_{i}.hocr`, **0-based over all canvases**, and is functionally v2-only (its v3 traversal extracts no images), so **v3-manifest sessions have no blessed draft source**, and circularity bites when the OCR under evaluation is itself iiif_ocr output (protocol, not software).
+7. **Timing records two numbers, disclosed, accumulated.** Per page: `seconds_elapsed` (page-open-to-save stints) and `seconds_active` (input heartbeat), both accumulating across visits — never replaced. Each posted stint carries a client nonce; a retried POST does not double-count. The pilot's headline rekey-cost number is **elapsed**, because the correction arm's cost is dominated by reading, which active-typing time undercounts. Accepted loss: a stint abandoned before any save posts nothing. Timing appears on the session summary the student can see.
+8. **IIIF rendering follows the parked option A**: plain IIIF Image API `<img>` (width-constrained), no OpenSeadragon; provenance is canvas-centric. The enlarged view is an **in-page lightbox overlay** — never a navigation, which in the chromeless Tauri window would strand the student (the chrome-level webview failure class already hit three times).
+9. **Browser scope (Trevor, PAR round 1; narrowed in round 2)**: local-folder sessions are desktop-only (`webkitdirectory` yields uploads, not paths). Browser mode supports **from-scratch IIIF sessions only** in v1; correction mode is desktop-only (a browser draft-folder upload is mechanically possible — same multipart pattern as grading — but deferred: the pilot runs on desktop). Stated plainly: the two-arm pilot cannot run in browser mode, by design.
 
 ## Architecture
 
-Three new modules beside the engine.
-
 | Module | Responsibility |
 |---|---|
-| `src/dpi_eval/conventions.py` | Pure normalization functions applied at save; exports `CONVENTIONS_VERSION`, stamped into every session. Encodes conventions decisions; does not make them (see Open decisions). |
-| `src/dpi_eval/sessions.py` | Session lifecycle: create from source with page selection, save/no-text/flag transitions (which own the GT files — see Data integrity), resume with reconciliation, OCR alignment for grading, export bundle. |
-| `src/dpi_eval/iiif.py` | Server-side manifest fetch (https only) and parse, Presentation v2 (`sequences/canvases`) and v3 (`items`), producing per-canvas records (canvas ID, label, image-service and/or static image URL). Drafts on iiif_ocr's `iiif_models.py` (v2 dataclasses) as prior art; iiif_ocr is not a dependency — its PaddleOCR/OpenCV chain is far too heavy for the offline wheelhouse, and it is v2-only. |
+| `src/dpi_eval/conventions.py` | Pure normalization at save; exports `CONVENTIONS_VERSION`, stamped per session. Encodes conventions decisions; does not make them (Open decisions #1). |
+| `src/dpi_eval/sessions.py` | Session lifecycle (draft → active), save/no-text/flag transitions that own the GT files, resume with reconciliation, draft-format detection/rejection, OCR alignment and staging, grade registration, export bundle, clone-with-selection. |
+| `src/dpi_eval/iiif.py` | Server-side manifest fetch (https only) and parse, Presentation v2 and v3, producing per-canvas records (canvas ID, label, image-service and/or static image URL). Drafts on iiif_ocr's `iiif_models.py` as prior art; iiif_ocr is not a dependency (PaddleOCR/OpenCV chain far too heavy for the wheelhouse; v2-only). |
 
-**Fence statement, stated precisely**: the transcription layer never imports dinglehopper. It imports `run_batch` (grading), `discover_pairs` conventions implicitly via file layout, and `normalize_ocr_input` from `adapter.py` for draft prefill — that last is a **new, second consumer of the adapter**, which amends the adapter's "deletable when dinglehopper gains hOCR support" contract: deletion would now also require replacing the editor's draft extraction. A comment in `adapter.py` records this.
+**Fence statement**: the transcription layer never imports dinglehopper. It imports `run_batch` (grading) and `normalize_ocr_input` from `adapter.py` (draft prefill) — a **new, second consumer of the adapter**, which will amend the adapter's "deletable when dinglehopper gains hOCR support" comment as part of implementation: deletion would now also require replacing the editor's draft extraction.
 
-Routes in `web.py`, rendered by `pages.py`. **Every mutating `/transcribe` route requires the per-launch token in both modes** — desktop injects it as today; browser mode now also generates one at startup and embeds it as a hidden form field, which doubles as the CSRF token. The Host guard alone does not stop cross-site form POSTs, and these routes write pilot ground truth and fetch URLs server-side; unauthenticated they would be a CSRF/SSRF surface.
+**Storage**: sessions live under a `transcriptions/` root sibling to the runs dir, both derived from the app's single `base_dir` (test-injectable exactly as runs are today). Session IDs are server-generated `s-<timestamp>-<random4>`; they appear in URLs and namespace exports.
 
-- `GET /transcribe` — source picker: local folder (desktop native dialog, token-gated path) or IIIF manifest URL; mode selection (from-scratch / correction, the latter adding a draft-folder input, desktop path or rejected-in-browser for v1).
-- `POST /transcribe/sessions` *(token)* — fetch/enumerate source, render page-selection list.
-- `POST /transcribe/sessions/{id}/confirm` *(token)* — create the session from the selection; validate stems; validate draft folder (format + pairing) in correction mode.
-- `GET /transcribe/sessions/{id}` — queue/summary: per-page status, flags, timings, export, Grade now (disabled with an explanatory message when no page is `saved`).
-- `GET /transcribe/sessions/{id}/pages/{n}` — the editor. Images: local files served by a session-scoped file route (path-validated against the session record, mirroring the `RUN_ID`-guard pattern); IIIF images loaded client-side from the recorded URL.
+Routes in `web.py`, rendered by `pages.py`. **Every mutating `/transcribe` route requires the per-launch token in both modes** — desktop injects it as today; browser mode also generates one at startup, embedded as a hidden form field (doubling as CSRF protection). The Host guard alone does not stop cross-site form POSTs; these routes write pilot ground truth and fetch URLs server-side.
+
+- `GET /transcribe` — **existing sessions list** (with per-session status and needs-attention marks — this is the resume entry point; the chromeless desktop window has no address bar, so resume must be reachable by click from the root) above the new-session picker (local folder via desktop native dialog; IIIF manifest URL; mode; draft folder in correction mode).
+- `POST /transcribe/sessions` *(token)* — enumerate/fetch the source, **create the session in `draft` state** (persisting the full enumeration), render the page-selection list.
+- `POST /transcribe/sessions/{id}/confirm` *(token)* — prune to the selection, validate stems and (correction mode) draft format + pairing, set state `active`. Draft-state sessions older than a cleanup horizon are offered for deletion on the sessions list; reconciliation skips them.
+- `GET /transcribe/sessions/{id}` — queue/summary: per-page status, flags, timings, clone-other-arm, export, Grade.
+- `GET /transcribe/sessions/{id}/pages/{n}` — the editor.
+- `GET /transcribe/sessions/{id}/images/{n}` — session-scoped local-image serving, path-validated against the session record (`RUN_ID`-guard pattern); IIIF images load client-side from recorded URLs.
 - `POST /transcribe/sessions/{id}/pages/{n}` *(token)* — save / no-text / flag transitions.
-- `POST /transcribe/sessions/{id}/grade` *(token)* — the grade handoff (below).
+- `POST /transcribe/sessions/{id}/grade/preview` *(token)* — receive the OCR folder (desktop: path; browser: multipart upload, stashed under the session's `staging/`), compute and display the alignment table. Nothing is graded.
+- `POST /transcribe/sessions/{id}/grade/confirm` *(token)* — run the grade from staged inputs; `staging/` is cleared on confirm or cancel.
 
-## Grading handoff and OCR alignment
+## Grading: alignment, staging, registration
 
-The existing pipeline pairs GT to OCR by **stem equality** (`pairing.py`), and no external OCR source will ever name files to match session stems — iiif_ocr writes `{page}.hocr`; vendors use their own conventions. Grading therefore goes through an **alignment step** in `sessions.py`, outside the engine:
+The engine pairs by stem equality (`pairing.py`) and consults no session record, so grading never touches `gt/` directly:
 
-1. The user supplies the OCR folder (desktop: native dialog path; browser: multipart upload, mirroring the existing `/grade` / `/grade-paths` dual pattern).
-2. `sessions.py` maps OCR files to session pages — **by canvas index** for IIIF sessions (session stems embed the index; iiif_ocr output is index-named), **by stem equality** for local sessions — and materializes a stem-aligned staging folder (copies/links named `<stem>.<ext>`).
-3. The staging folder and the session's `gt/` go to `run_batch` exactly as any other pair of folders. The engine is untouched.
-4. The session summary displays the alignment table (page → OCR file) before grading runs, so a mispair is visible, and reports unmatched files on both sides.
+1. **GT staging**: grade-confirm materializes a staged GT folder containing **only pages whose status is `saved`** at that moment. Crash-orphaned GT files (present on disk, page not `saved`) are therefore structurally excluded from grading — the needs-attention state (below) governs them; a `saved` page missing its file blocks grading with a needs-attention message rather than silently vanishing from the report.
+2. **OCR alignment**: OCR files map to pages — IIIF sessions by canvas index, local sessions by stem equality — into a stem-aligned staging folder. **The index convention is pinned: `source_index` is 0-based over all canvases of the manifest, matching iiif_ocr's `page_{i}` exactly; the extraction rule is the trailing integer of the filename stem.** (An off-by-one here would produce a plausible-looking table that mispairs every page — the one failure the preview can't catch on look-alike pages, hence pinning it in the spec and testing it explicitly.) Staged copies are renamed `<stem>.<normalized-ext>`, where recognized OCR extensions map into the set `discover_pairs` accepts (`.hocr`, `.xml`, `.txt`); unrecognized and non-OCR files (e.g. the `page_N.jpeg` images iiif_ocr leaves beside its hOCR) are filtered out before the unmatched-files report, not listed as noise.
+3. **Manual re-pairing**: the alignment preview is editable — each page row offers the unmatched OCR files as an override. This is what makes **vendor OCR of IIIF-sourced objects** gradeable (vendor filenames carry no extractable canvas index; auto-alignment will leave them unmatched, and the supervisor pairs them once in the preview). Auto-alignment is a convenience; the preview is the contract.
+4. **Registration**: grade-confirm reuses the run-registration tail of `_grade_pipeline` (refactored into a shared helper) so the run lands as `run-NNN/result.json` under the runs dir and the **existing results page serves it unchanged**.
 
 ## Data shapes
 
-A session is a directory: `~/dpi-eval-transcriptions/<id>/` containing `session.json` and `gt/`. GT files are pure normalized text; all metadata lives in `session.json`.
+`~/…/transcriptions/<id>/` contains `session.json`, `gt/`, and transiently `staging/`.
 
 ```json
 {
-  "id": "…", "created": "…",
-  "mode": "from_scratch | correction",
+  "id": "s-20260724-142212-x7qk", "created": "…",
+  "state": "draft | active",
+  "mode": "from_scratch | corrected",
   "source": {"type": "local", "path": "…"},
   "conventions_version": "1",
   "draft_source": "path (correction mode only)",
@@ -80,57 +85,54 @@ A session is a directory: `~/dpi-eval-transcriptions/<id>/` containing `session.
 }
 ```
 
-For `iiif` sources, `source` is `{"type": "iiif", "manifest_url": "…"}`. `image_url`/`image_service` are **persisted at creation** because a canvas ID is an identifier, not a dereferenceable image endpoint — without stored URLs a resumed IIIF session could not re-render after a restart. `flagged` is orthogonal to `status`: a page can be transcribed *and* flagged ("unsure about this ligature"). Stems: local = filename stem; IIIF = `p<index>-<label-slug>` (v3 language-map labels slug from the first value of the first language, missing labels fall back to index only); `source_index` carries the alignment key.
+For `iiif` sources, `source` is `{"type": "iiif", "manifest_url": "…"}`. In `draft` state, `pages` holds the full source enumeration; `confirm` prunes it to the selection. `image_url`/`image_service` are persisted at creation — a canvas ID is an identifier, not a dereferenceable image, and a resumed IIIF session must re-render without re-fetching the manifest. `flagged` is orthogonal to `status`. Stems: local = filename stem; IIIF = `p<index>-<label-slug>` (0-based index, zero-padded to 4; label slugs from the first value of the first language in a v3 language map; a missing label **or a label that slugs to nothing** — e.g. non-Latin labels in the Japanese-books material — falls back to the index-only stem). GT files are named `<stem>.gt.txt`, the pairing convention grading depends on.
 
-**Not modeled in v1** (in the layers-audit object model as later work): rights fields (the private-repo default covers the pilot) and the `draft → audited → accepted` lifecycle (auditing is TCP-style protocol outside the app).
+**Not modeled in v1**: rights fields; the `draft → audited → accepted` transcription lifecycle (protocol outside the app).
 
 ## Data integrity — the GT folder never lies
 
-Grading reads the filesystem, so the filesystem must agree with the session record at all times:
-
-- **Status transitions own the GT file.** `saved` writes it (temp + rename); `no_text` — including re-marking a previously saved page — **deletes it**; `pending` means no file.
-- **Write order is fixed**: GT file first, `session.json` second (also temp + rename).
-- **Reconciliation at session load**: `gt/` is compared against `session.json`. A GT file for a non-`saved` page, or a `saved` page with no file (the crash-between-writes cases), surfaces as a "needs attention" state on the queue — never silently graded, never silently dropped.
-- Grade-now runs only over pages that are `saved` at grade time.
+- **Status transitions own the GT file**: `saved` writes it (temp + rename); `no_text` — including re-marking a saved page — deletes it; `pending` means no file.
+- **Write order fixed**: GT file first, `session.json` second (temp + rename).
+- **Reconciliation at session load**: mismatches (GT file for a non-`saved` page; `saved` page without a file) become a **needs-attention** state on the queue. Resolution is explicit: opening a needs-attention page shows the orphan text (or the absence) and the student **saves (adopts) or discards** it; no other action clears the state.
+- **Grading and export read only staged, status-filtered copies** — never raw `gt/` (see Grading; Export). Grade is blocked while any needs-attention state exists.
+- **Conventions-version guard covers all mutating actions** (save, no-text, flag, grade, export): a session resumed under a different `CONVENTIONS_VERSION` is read-only with a message. (Desktop app updates rebuild the venv, so "finish under the matching version" usually means: export what exists, start a new session.)
+- Multi-tab editing of one page (browser mode) is last-write-wins and out of scope to prevent; the pilot is single-student-per-session by protocol.
 
 ## Editor page and flow
 
-Image left, editor right. The textarea is monospace with the substitution defenses from decision 3. The image renders width-constrained (IIIF: Image API sized request when the service supports it — level-0 services and serviceless canvases fall back to the static image URL; local: the session-scoped file route); clicking opens the in-page lightbox at larger size. Correction mode pre-fills the textarea with the normalized draft under a banner preserving the whose-error framing: "Machine draft — correct it faithfully; the OCR is what's being graded."
+Image left, editor right; textarea per decisions 2–3. Images render width-constrained (IIIF: Image API sized request where the service profile allows; level-0 and serviceless canvases use the static URL; local: the session-scoped image route); click opens the lightbox. Correction mode pre-fills the normalized draft under the banner "Machine draft — correct it faithfully; the OCR is what's being graded." Controls: **Save & next** · **No text on this page** · **Flag for supervisor** (toggle + note). Progress displays 1-based ("Page 4 of 12") over the 0-based `source_index` — display and alignment key are distinct by design. Image failures are page-level: retry / flag-and-skip; the student is never stalled.
 
-Controls: **Save & next** · **No text on this page** · **Flag for supervisor** (toggle + note, independent of save state). Progress reads "Page 4 of 12." Timing per decision 7. Failures are page-level states: an image that won't load offers retry and flag-and-skip; the student is never stalled.
-
-Session summary: per-page status, flags, timings; **Export for repo**; **Grade now** → alignment table → existing pipeline → existing results page.
+Session summary: per-page status, flags, timings; **New session from this selection (other arm)**; **Export for repo**; **Grade** (disabled, with the reason shown, when no page is `saved` or any page needs attention).
 
 ## Export for the ground-truth repo
 
-Bare `gt/` would strip the metadata the pilot requires (arm, conventions version, canvas provenance, timings) and — because the crossover design runs the same pages through both arms — two sessions would produce **identical GT filenames** that collide in a shared repo. Export therefore produces a bundle: `<session-id>/` containing `gt/`, and `transcriptions.json` (per page: stem, arm, conventions version, canvas ID, elapsed/active seconds, flags/notes, saved_at). Session-ID namespacing makes cross-arm twins coexist; the sidecar makes them analyzable.
+Export produces `<session-id>/` containing a **staged `gt/` filtered to `saved` pages** and `transcriptions.json` covering **every selected page**: stem, `status` (so a deliberate blank is distinguishable from a page never finished — blank-rate is sample-design evidence), arm, conventions version, canvas ID, elapsed/active seconds, flags/notes, saved_at. Session-ID namespacing lets cross-arm twins of the same pages coexist in the shared repo; the sidecar makes them analyzable.
 
 ## IIIF handling and failure modes
 
-Manifest fetch is server-side, https-only. Prefer the image service for sized requests where its profile allows; fall back to the static image URL for level-0 services and serviceless canvases. Local-folder enumeration is non-recursive over `{jpg, jpeg, png, tif, tiff}` (case-insensitive). Failure states: manifest unreachable → create-time error naming the URL and reason; image failure mid-session → page-level retry / flag-and-skip. Public manifests only in v1. No image caching; stored URLs plus canvas IDs make images re-resolvable, and re-fetching the manifest is never required for resume.
+Manifest fetch server-side, https-only; create-time failure names the URL and reason. Prefer the image service where its profile allows sized requests. Local-folder enumeration is non-recursive over `{jpg, jpeg, png, tif, tiff}` (case-insensitive). Public manifests only. No image caching; stored URLs make resume self-sufficient.
 
-## Conventions versioning across time
-
-A session is stamped with `CONVENTIONS_VERSION` at creation. If the module's version has changed when a session is resumed, saves are **refused** with a message (finish under the matching app version, or start a new session) — a session must never contain pages normalized under two different rule sets.
+**Image-format caveat (open decision #4)**: WKWebView renders TIFF; Windows WebView2 (the `nsis` target) and JP2 anywhere-but-Safari do not. v1 pilot hardware is macOS; if Windows or JP2-heavy vendor material enters scope, the session image route grows server-side conversion (Pillow, a wheelhouse addition) rather than any webview-side fix.
 
 ## Testing
 
-- `conventions.py`: pure per-rule unit tests, plus a guard test that rule changes force a version bump.
-- `iiif.py`: fixture manifests — one real UMD manifest plus a synthetic manifest for the other Presentation version; parser tests for service-vs-static resolution, level-0 profiles, v3 language-map labels.
-- `sessions.py`: tmpdir lifecycle tests — create with selection → save → resume → re-mark no_text (asserts GT deletion) → flag independence → crash-simulation reconciliation (orphan GT, missing GT) → OCR alignment by index and by stem, including unmatched-file reporting → export bundle shape.
-- Routes: TestClient tests in the existing web-test pattern — token enforcement on every mutating route (desktop and browser modes), correction-mode prefill (hOCR and `.txt`), ALTO/PAGE draft rejection, grade handoff both variants, Grade-now gating with zero saved pages.
-- Manual QA: desktop smoke test with one real UMD manifest and one local folder, through alignment table to a graded run; browser smoke test of an IIIF session.
+- `conventions.py`: per-rule unit tests; version-bump guard.
+- `iiif.py`: fixture manifests (one real UMD, one synthetic for the other version); service-vs-static and level-0 resolution; v3 language-map and empty-slug labels.
+- `sessions.py`: draft→confirm lifecycle (including abandoned drafts); save/no-text GT deletion; flag orthogonality; crash-simulation reconciliation both directions and its resolution flow; **alignment: 0-based index extraction against literal `page_0.hocr`…`page_11.hocr` fixtures (regression-pins the off-by-one), extension normalization, non-OCR file filtering, manual override**; staged-GT filtering (orphan excluded, missing-file blocks); clone-other-arm selection identity; export bundle including `no_text` rows; stint-nonce idempotency.
+- Routes: token enforcement on every mutating route in both modes; correction prefill (hOCR and `.txt`), ALTO/PAGE rejection incl. hOCR-as-`.xml` acceptance; grade preview→confirm (path and upload variants) and staging cleanup; run registration lands `result.json` the results page can serve; Grade gating (zero saved; needs-attention).
+- Manual QA: desktop smoke — real UMD manifest and local folder through preview, override one pairing, grade, export; browser smoke — from-scratch IIIF session.
 
 ## Out of scope for v1 (refusals, not oversights)
 
-OpenSeadragon/deep zoom · authenticated IIIF · rights fields · transcription audit states · supervisor sample-authoring beyond select-at-create · annotation write-back (rail preserved via canvas IDs) · client-side session state · image caching · browser local-folder sessions · ALTO/PAGE correction drafts.
+OpenSeadragon/deep zoom · authenticated IIIF · rights fields · transcription audit states · supervisor sample-authoring beyond select-at-create and clone-other-arm · annotation write-back (rail preserved via canvas IDs) · client-side session state · image caching · browser local-folder sessions · browser correction sessions · ALTO/PAGE correction drafts · multi-user concurrency control.
 
 ## Open decisions (tracked, not blocking implementation start)
 
-1. **Conventions content** (punch-list #12): line breaks, Unicode form, end-of-line hyphenation, ligatures, long s. Needs Trevor's sign-off before the first pilot page is typed; the module versions whatever is decided, and v1 ships a minimal proposed set for that review.
-2. **Correction-arm seed engine**: which engine/model fills the draft folder per batch — pilot protocol document, with the circularity warning.
-3. **HTTP fetch dependency** for `iiif.py`: stdlib `urllib` avoids growing the offline wheelhouse; a nicer client adds a wheel. Implementation-time call; wheelhouse impact must be stated in the PR either way.
+1. **Conventions content** (punch-list #12): line breaks, Unicode form, end-of-line hyphenation, ligatures, long s. Needs Trevor's sign-off before the first pilot page is typed; v1 ships a minimal proposed set for that review.
+2. **Correction-arm seed engine** per batch — pilot protocol document, with the circularity warning.
+3. **HTTP fetch dependency** for `iiif.py`: stdlib `urllib` vs a wheel. Wheelhouse impact stated in the PR either way.
+4. **Image-format conversion** (TIFF on Windows, JP2 generally): Pillow in the wheelhouse when non-macOS or JP2 material enters scope. Decide alongside #3 as one wheelhouse review.
 
 ## Review record
 
-PAR round 1 (2026-07-24, two independent same-model reviewers): 3 critical (IIIF grade pairing dead-end; stale-GT/source-of-truth integrity; unauthenticated mutation surface) and 9 serious findings, all incorporated above; browser scope, timing metric, and sampling mechanism resolved by Trevor. Round 2 pending.
+PAR round 1 (2026-07-24, two independent same-model reviewers): 3 critical / 9 serious — all incorporated; browser scope, timing metric, and sampling mechanism resolved by Trevor. PAR round 2 (fresh pair, same protocol): 1 critical (orphan-GT grading/export leak → staged, status-filtered grading and export) and 9 serious after dedup (vendor-OCR alignment → editable preview with manual override; 0-based index pinned with extraction rule; two-phase create → explicit `draft` state; preview/confirm grade routes with staging lifecycle; sessions list as resume entry point; export gains `status`; browser-scope contradiction resolved by narrowing decision 9; ALTO/PAGE detection assigned to `sessions.py` by root-element sniff; TIFF/Windows → open decision #4; clone-other-arm added for the crossover) — all incorporated, plus minors (run registration via shared helper, stint nonces, conventions guard over all mutations, empty-slug labels, storage root from `base_dir`, arm vocabulary aligned to the audit).
