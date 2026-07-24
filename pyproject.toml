@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.110",
     "python-multipart>=0.0.9",
     "uvicorn>=0.29",
+    "pillow>=10",
 ]
 
 [project.scripts]

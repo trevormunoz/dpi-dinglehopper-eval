@@ -633,6 +633,7 @@ source = { editable = "." }
 dependencies = [
     { name = "dinglehopper" },
     { name = "fastapi" },
+    { name = "pillow" },
     { name = "python-multipart" },
     { name = "uvicorn" },
 ]
@@ -647,6 +648,7 @@ dev = [
 requires-dist = [
     { name = "dinglehopper", specifier = ">=0.11.0" },
     { name = "fastapi", specifier = ">=0.110" },
+    { name = "pillow", specifier = ">=10" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "uvicorn", specifier = ">=0.29" },
 ]
