@@ -10,6 +10,7 @@ sizeByConfinedWh (!w,h). Rotation other than 0, qualities other than
 default, and formats other than jpg are rejected with 400.
 """
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -58,20 +59,30 @@ def parse_params(region: str, size: str, rotation: str, quality: str, fmt: str) 
 
 
 def image_dims(path: Path) -> tuple[int, int]:
-    with Image.open(path) as img:  # lazy: reads headers, not pixel data
-        return img.size
+    try:
+        with Image.open(path) as img:  # lazy: reads headers, not pixel data
+            return img.size
+    except Exception as exc:
+        raise DeriveError(f"Cannot read master image {path.name}: {exc}",
+                          status=500) from exc
 
 
 def derive(master: Path, region: str, size: str, cache_dir: Path) -> Path:
     params = parse_params(region, size, "0", "default", "jpg")
-    key = f"{master.stem}_{region}_{size}".replace(",", "-").replace("!", "c")
+    src_tag = hashlib.sha1(str(master.resolve()).encode("utf-8")).hexdigest()[:8]
+    key = f"{master.stem}_{src_tag}_{region}_{size}".replace(",", "-").replace("!", "c")
     key = re.sub(r"[^A-Za-z0-9_-]", "_", key)
     cache_dir.mkdir(parents=True, exist_ok=True)
     out = cache_dir / f"{key}.jpg"
     if out.exists():
         return out
 
-    with Image.open(master) as img:
+    try:
+        source = Image.open(master)
+    except Exception as exc:
+        raise DeriveError(f"Cannot read master image {master.name}: {exc}",
+                          status=500) from exc
+    with source as img:
         img = img.convert("RGB")
         if params["region"]:
             x, y, w, h = params["region"]

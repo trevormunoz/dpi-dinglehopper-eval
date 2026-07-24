@@ -79,3 +79,26 @@ def test_info_json_declares_exactly_level1_plus_confined():
     assert doc["profile"] == "level1"
     assert doc["extraFeatures"] == ["sizeByConfinedWh"]
     assert (doc["width"], doc["height"]) == (400, 200)
+
+
+def test_corrupt_master_raises_derive_error(tmp_path):
+    bad = tmp_path / "bad.tif"
+    bad.write_bytes(b"not an image at all")
+    with pytest.raises(DeriveError) as exc_info:
+        derive(bad, "full", "max", tmp_path / "d")
+    assert exc_info.value.status == 500
+    with pytest.raises(DeriveError):
+        image_dims(bad)
+
+
+def test_cache_key_distinguishes_same_stem_different_masters(tmp_path):
+    a_dir = tmp_path / "a"; b_dir = tmp_path / "b"
+    a_dir.mkdir(); b_dir.mkdir()
+    Image.new("RGB", (30, 30), color=(255, 0, 0)).save(a_dir / "page.png")
+    Image.new("RGB", (60, 60), color=(0, 255, 0)).save(b_dir / "page.png")
+    cache = tmp_path / "derivatives"
+    out_a = derive(a_dir / "page.png", "full", "max", cache)
+    out_b = derive(b_dir / "page.png", "full", "max", cache)
+    assert out_a != out_b
+    with Image.open(out_b) as img:
+        assert img.size == (60, 60)
