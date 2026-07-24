@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import socket
 import threading
@@ -189,6 +190,12 @@ def _grade_pipeline(
             details,
         )
 
+    return _register(run_dir)
+
+
+def _register(run_dir: Path) -> Path:
+    """Run the engine over an already-populated run dir's gt/ocr folders
+    and write result.json so the /runs/{id} results page can serve it."""
     result, code = run_batch(
         run_dir / "gt", run_dir / "ocr", run_dir / "reports"
     )
@@ -204,6 +211,24 @@ def _grade_pipeline(
         encoding="utf-8",
     )
     return run_dir
+
+
+def _run_and_register(gt_dir: Path, ocr_dir: Path, base_dir: Path) -> Path:
+    """Copy two ready folders into a fresh run dir and register the run.
+    Shared by the transcription grade-confirm route (later task)."""
+    run_dir = _next_run_dir(base_dir)
+    shutil.copytree(gt_dir, run_dir / "gt")
+    shutil.copytree(ocr_dir, run_dir / "ocr")
+    return _register(run_dir)
+
+
+def _check_token(request: Request, form_token: str | None = None) -> None:
+    """403 unless the caller supplies the per-launch token via the
+    X-DPI-Eval-Token header or a form field; also 403 when unset."""
+    token = os.environ.get("DPI_EVAL_TOKEN")
+    supplied = request.headers.get("X-DPI-Eval-Token") or form_token
+    if not token or supplied != token:
+        raise HTTPException(status_code=403)
 
 
 def _next_run_dir(base_dir: Path) -> Path:
@@ -398,6 +423,10 @@ def main(argv=None) -> int:
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    if not os.environ.get("DPI_EVAL_TOKEN"):
+        # Browser mode: mint a per-launch token; forms embed it as a
+        # hidden field (CSRF), matching the desktop shell's header token.
+        os.environ["DPI_EVAL_TOKEN"] = secrets.token_urlsafe(24)
     port = _pick_port()
     url = f"http://{HOST}:{port}"
     app = create_app(
