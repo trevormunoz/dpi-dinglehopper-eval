@@ -1,6 +1,6 @@
 # Transcription editor — design spec
 
-Date: 2026-07-24 · Branch: `feat/dpi-eval-desktop` · Status: revised after PAR rounds 1 and 2, pending Trevor's review
+Date: 2026-07-24 · Branch: `feat/dpi-eval-desktop` · Status: **approved** — PAR rounds 1–2 incorporated; final human review 2026-07-24 settled line-for-line transcription, no-text reason enum, collection-labeled exports, and anonymous sessions
 
 ## Why this exists
 
@@ -19,7 +19,7 @@ A student-facing transcription flow added to the existing dpi-eval web/desktop a
 1. **Approach A** — new routes in the existing FastAPI app (`web.py`/`pages.py` idiom), not a separate tool, not a client-heavy JS app.
 2. **Editor surface is a plain `<textarea>`.** Tiptap was considered and rejected: it is a rich-text document model (ProseMirror block nodes) whose plain text is a serialization, while our artifact *is* plain text byte-for-byte; its no-build path is CDN ES modules, which the self-contained-pages rule forbids. There is no "more Tauri-native" option — Tauri's UI is the webview, and all webview failures to date were chrome-level (handled natively), never rendering. Upgrade path if the pilot shows need for visual affordances: CodeMirror 6 vendored into the wheelhouse.
 3. **macOS text-substitution defenses are mandatory**: `spellcheck="false"`, `autocorrect="off"`, `autocapitalize="off"`, smart-quote/dash substitution disabled. System autocorrect silently rewriting a faithful transcription is a conventions killer.
-4. **Conventions are enforced server-side in Python** (`conventions.py`), versioned, applied at save.
+4. **Conventions are enforced server-side in Python** (`conventions.py`), versioned, applied at save. **The cornerstone rule is settled (Trevor, 2026-07-24): transcription is line-for-line** — the student presses Enter at each printed line end, matching the page. This is standard GLAM ground-truth practice (OCR-D conventions), preserves layout signal, and makes GT and OCR line breaks symmetric — removing the doubled-CER phantom at its source. The conventions module therefore **preserves newlines as typed** and normalizes within lines (Unicode form, etc.). The remaining conventions content (hyphenation, ligatures, long s, Unicode form) stays open decision #1.
 5. **The app records, the protocol assigns.** A session is created in one mode (`from_scratch` or `corrected`) and stamps that arm on every transcription. (Vocabulary matches the layers-audit object model.) Who runs which mode over which pages lives in the pilot protocol document; the clone-session affordance keeps the paired selection exact.
 6. **Correction-mode drafts: hOCR or plain text only in v1.** Drafts pair to pages **by the same alignment rules as grading** (below) and are normalized via `adapter.py` (hOCR → text) or passed through (`.txt`). ALTO/PAGE XML draft folders are **rejected at session creation**: detection is by XML root element (`alto`, `PcGts`) with extension as a hint only, so hOCR delivered as `.xml` still passes; the rejection logic lives in `sessions.py`, not the adapter. Rationale: `adapter.py` deliberately passes XML through for dinglehopper to auto-detect downstream, and the editor has no dinglehopper downstream. Which engine produced the drafts is a pilot-protocol decision; punch-list #5's anchoring warning is documented there. **Blessed pilot path for IIIF sessions (Trevor, 2026-07-24): [iiif_ocr](https://github.com/aguilarm-umd/iiif_ocr)** — feed the same manifest to both tools. Verified against its source: it writes `page_{i}.hocr`, **0-based over all canvases**, and is functionally v2-only (its v3 traversal extracts no images), so **v3-manifest sessions have no blessed draft source**, and circularity bites when the OCR under evaluation is itself iiif_ocr output (protocol, not software).
 7. **Timing records two numbers, disclosed, accumulated.** Per page: `seconds_elapsed` (page-open-to-save stints) and `seconds_active` (input heartbeat), both accumulating across visits — never replaced. Each posted stint carries a client nonce; a retried POST does not double-count. The pilot's headline rekey-cost number is **elapsed**, because the correction arm's cost is dominated by reading, which active-typing time undercounts. Accepted loss: a stint abandoned before any save posts nothing. Timing appears on the session summary the student can see.
@@ -68,12 +68,14 @@ The engine pairs by stem equality (`pairing.py`) and consults no session record,
   "id": "s-20260724-142212-x7qk", "created": "…",
   "state": "draft | active",
   "mode": "from_scratch | corrected",
+  "collection": "optional collection/handle label",
   "source": {"type": "local", "path": "…"},
   "conventions_version": "1",
   "draft_source": "path (correction mode only)",
   "pages": [
     {"stem": "p0007-masthead",
      "status": "pending | saved | no_text",
+     "no_text_reason": "blank | image_only | illegible (required when no_text)",
      "flagged": false, "note": "flag note, if any",
      "canvas_id": "https://… (iiif only)",
      "image_url": "https://… (iiif only)",
@@ -87,7 +89,7 @@ The engine pairs by stem equality (`pairing.py`) and consults no session record,
 
 For `iiif` sources, `source` is `{"type": "iiif", "manifest_url": "…"}`. In `draft` state, `pages` holds the full source enumeration; `confirm` prunes it to the selection. `image_url`/`image_service` are persisted at creation — a canvas ID is an identifier, not a dereferenceable image, and a resumed IIIF session must re-render without re-fetching the manifest. `flagged` is orthogonal to `status`. Stems: local = filename stem; IIIF = `p<index>-<label-slug>` (0-based index, zero-padded to 4; label slugs from the first value of the first language in a v3 language map; a missing label **or a label that slugs to nothing** — e.g. non-Latin labels in the Japanese-books material — falls back to the index-only stem). GT files are named `<stem>.gt.txt`, the pairing convention grading depends on.
 
-**Not modeled in v1**: rights fields; the `draft → audited → accepted` transcription lifecycle (protocol outside the app).
+**Not modeled in v1**: rights fields; the `draft → audited → accepted` transcription lifecycle (protocol outside the app); **transcriber identity (decided — Trevor, 2026-07-24: sessions are anonymous)** — the pilot protocol maps session IDs to students in an external sheet, and consequently the app cannot detect the same student taking both arms of the same pages; that contamination check is a named protocol responsibility.
 
 ## Data integrity — the GT folder never lies
 
@@ -100,13 +102,13 @@ For `iiif` sources, `source` is `{"type": "iiif", "manifest_url": "…"}`. In `d
 
 ## Editor page and flow
 
-Image left, editor right; textarea per decisions 2–3. Images render width-constrained (IIIF: Image API sized request where the service profile allows; level-0 and serviceless canvases use the static URL; local: the session-scoped image route); click opens the lightbox. Correction mode pre-fills the normalized draft under the banner "Machine draft — correct it faithfully; the OCR is what's being graded." Controls: **Save & next** · **No text on this page** · **Flag for supervisor** (toggle + note). Progress displays 1-based ("Page 4 of 12") over the 0-based `source_index` — display and alignment key are distinct by design. Image failures are page-level: retry / flag-and-skip; the student is never stalled.
+Image left, editor right; textarea per decisions 2–3. Images render width-constrained (IIIF: Image API sized request where the service profile allows; level-0 and serviceless canvases use the static URL; local: the session-scoped image route); click opens the lightbox. Correction mode pre-fills the normalized draft under the banner "Machine draft — correct it faithfully; the OCR is what's being graded." Controls: **Save & next** · **No text on this page** (requires one choice: blank / image-only / illegible) · **Flag for supervisor** (toggle + note). Progress displays 1-based ("Page 4 of 12") over the 0-based `source_index` — display and alignment key are distinct by design. Image failures are page-level: retry / flag-and-skip; the student is never stalled.
 
 Session summary: per-page status, flags, timings; **New session from this selection (other arm)**; **Export for repo**; **Grade** (disabled, with the reason shown, when no page is `saved` or any page needs attention).
 
 ## Export for the ground-truth repo
 
-Export produces `<session-id>/` containing a **staged `gt/` filtered to `saved` pages** and `transcriptions.json` covering **every selected page**: stem, `status` (so a deliberate blank is distinguishable from a page never finished — blank-rate is sample-design evidence), arm, conventions version, canvas ID, elapsed/active seconds, flags/notes, saved_at. Session-ID namespacing lets cross-arm twins of the same pages coexist in the shared repo; the sidecar makes them analyzable.
+Export produces `<collection>/<session-id>/` (sessions without a collection label land under `_unsorted/`) containing a **staged `gt/` filtered to `saved` pages** and `transcriptions.json` covering **every selected page**: stem, `status` and `no_text_reason` (blank-rate and illegible-rate are distinct sample-design evidence, and an illegible page — GT cannot exist, OCR output might — is its own finding), arm, conventions version, canvas ID, elapsed/active seconds, flags/notes, saved_at. Session-ID namespacing lets cross-arm twins of the same pages coexist in the shared repo; the sidecar makes them analyzable.
 
 ## IIIF handling and failure modes
 
