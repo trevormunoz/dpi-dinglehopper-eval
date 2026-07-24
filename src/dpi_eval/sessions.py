@@ -137,6 +137,11 @@ def create_local_session(
     )
     if not images:
         raise SessionError("That folder contains no page images.")
+    stems = [p.stem for p in images]
+    if len(stems) != len(set(stems)):
+        raise SessionError(
+            "Two images in that folder share a name and differ only by "
+            "extension — rename one; page stems must be unique.")
     session = _base_session(mode, collection, {"type": "local", "path": str(folder)})
     session["pages"] = [_page_record(p.stem, i) for i, p in enumerate(images)]
     for page, path in zip(session["pages"], images):

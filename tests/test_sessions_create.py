@@ -85,3 +85,23 @@ def test_corrected_mode_with_alto_drafts_rejected(root, image_folder, tmp_path):
     (drafts / "scan-A.xml").write_text('<?xml version="1.0"?><alto></alto>')
     with pytest.raises(SessionError):
         create_local_session(root, image_folder, "corrected", "", drafts)
+
+
+def test_local_session_rejects_colliding_stems(root, tmp_path):
+    folder = tmp_path / "dup"
+    folder.mkdir()
+    (folder / "page1.jpg").write_bytes(b"x")
+    (folder / "page1.tif").write_bytes(b"x")
+    with pytest.raises(SessionError):
+        create_local_session(root, folder, "from_scratch", "", None)
+
+
+def test_list_sessions_order_is_newest_first(root, image_folder, monkeypatch):
+    from dpi_eval import sessions as sessions_mod
+
+    ids = iter(["s-20260101-000000-aaaa", "s-20260102-000000-bbbb"])
+    monkeypatch.setattr(sessions_mod, "new_session_id", lambda: next(ids))
+    older = create_local_session(root, image_folder, "from_scratch", "", None)
+    newer = create_local_session(root, image_folder, "from_scratch", "", None)
+    listed = [s["id"] for s in list_sessions(root)]
+    assert listed == [newer["id"], older["id"]]
