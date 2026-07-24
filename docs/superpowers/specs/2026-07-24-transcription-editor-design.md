@@ -110,9 +110,9 @@ Export produces `<session-id>/` containing a **staged `gt/` filtered to `saved` 
 
 ## IIIF handling and failure modes
 
-Manifest fetch server-side, https-only; create-time failure names the URL and reason. Prefer the image service where its profile allows sized requests. Local-folder enumeration is non-recursive over `{jpg, jpeg, png, tif, tiff}` (case-insensitive). Public manifests only. No image caching; stored URLs make resume self-sufficient.
+Manifest fetch server-side, https-only; create-time failure names the URL and reason. Prefer the image service where its profile allows sized requests. Local-folder enumeration is non-recursive over `{jpg, jpeg, png, tif, tiff, jp2}` (case-insensitive). Public manifests only. No remote-image caching; stored URLs make resume self-sufficient.
 
-**Image-format caveat (open decision #4)**: WKWebView renders TIFF; Windows WebView2 (the `nsis` target) and JP2 anywhere-but-Safari do not. v1 pilot hardware is macOS; if Windows or JP2-heavy vendor material enters scope, the session image route grows server-side conversion (Pillow, a wheelhouse addition) rather than any webview-side fix.
+**Image formats (decided — Trevor, 2026-07-24: JP2s are in the collection)**: JP2 renders in no webview except Safari's, and TIFF not in Windows WebView2, so the session image route normalizes at serve time: `jpg/jpeg/png` are served as-is; `tif/tiff/jp2` are converted server-side via **Pillow** (official wheels bundle OpenJPEG, so JP2 decoding ships in one wheel — a stated wheelhouse addition) into a `derivatives/` cache inside the session directory, converted once on first request. IIIF sessions are unaffected in the common case — the Image API serves JPEG derivatives regardless of the master format — this is for local-folder sessions pointing at masters, and it keeps the webview a renderer: no codec workarounds client-side.
 
 ## Testing
 
@@ -120,7 +120,8 @@ Manifest fetch server-side, https-only; create-time failure names the URL and re
 - `iiif.py`: fixture manifests (one real UMD, one synthetic for the other version); service-vs-static and level-0 resolution; v3 language-map and empty-slug labels.
 - `sessions.py`: draft→confirm lifecycle (including abandoned drafts); save/no-text GT deletion; flag orthogonality; crash-simulation reconciliation both directions and its resolution flow; **alignment: 0-based index extraction against literal `page_0.hocr`…`page_11.hocr` fixtures (regression-pins the off-by-one), extension normalization, non-OCR file filtering, manual override**; staged-GT filtering (orphan excluded, missing-file blocks); clone-other-arm selection identity; export bundle including `no_text` rows; stint-nonce idempotency.
 - Routes: token enforcement on every mutating route in both modes; correction prefill (hOCR and `.txt`), ALTO/PAGE rejection incl. hOCR-as-`.xml` acceptance; grade preview→confirm (path and upload variants) and staging cleanup; run registration lands `result.json` the results page can serve; Grade gating (zero saved; needs-attention).
-- Manual QA: desktop smoke — real UMD manifest and local folder through preview, override one pairing, grade, export; browser smoke — from-scratch IIIF session.
+- Image serving: conversion tests with small TIFF and JP2 fixtures (derivative created once, cached, served as JPEG; web-safe formats served untouched).
+- Manual QA: desktop smoke — real UMD manifest and local folder (including at least one JP2 master) through preview, override one pairing, grade, export; browser smoke — from-scratch IIIF session.
 
 ## Out of scope for v1 (refusals, not oversights)
 
@@ -130,8 +131,7 @@ OpenSeadragon/deep zoom · authenticated IIIF · rights fields · transcription 
 
 1. **Conventions content** (punch-list #12): line breaks, Unicode form, end-of-line hyphenation, ligatures, long s. Needs Trevor's sign-off before the first pilot page is typed; v1 ships a minimal proposed set for that review.
 2. **Correction-arm seed engine** per batch — pilot protocol document, with the circularity warning.
-3. **HTTP fetch dependency** for `iiif.py`: stdlib `urllib` vs a wheel. Wheelhouse impact stated in the PR either way.
-4. **Image-format conversion** (TIFF on Windows, JP2 generally): Pillow in the wheelhouse when non-macOS or JP2 material enters scope. Decide alongside #3 as one wheelhouse review.
+3. **HTTP fetch dependency** for `iiif.py`: stdlib `urllib` vs a wheel. Wheelhouse impact stated in the PR either way, alongside the Pillow addition (image conversion, decided above).
 
 ## Review record
 
