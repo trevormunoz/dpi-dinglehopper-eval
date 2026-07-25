@@ -49,6 +49,23 @@ def test_parse_rejects_manifest_with_no_canvases():
         parse_manifest({"@context": "x", "sequences": []})
 
 
+def test_parse_rejects_manifest_with_imageless_canvas_mid_sequence():
+    doc = _load("manifest_v2.json")
+    doc["sequences"][0]["canvases"].insert(
+        1, {"@id": "https://iiif.example.edu/c/blank", "label": "Blank", "images": []})
+    with pytest.raises(IIIFError):
+        parse_manifest(doc)
+
+
+def test_parse_v3_choice_body_uses_first_choice():
+    doc = _load("manifest_v3.json")
+    canvas = doc["items"][0]
+    anno = canvas["items"][0]["items"][0]
+    anno["body"] = [anno["body"], {"id": "https://x/alt.jpg", "type": "Image"}]
+    records = parse_manifest(doc)
+    assert records[0].image_url == "https://iiif.example.edu/i3/0/full/max/0/default.jpg"
+
+
 def test_fetch_manifest_happy_path_parses_json(monkeypatch):
     import io
     import urllib.request

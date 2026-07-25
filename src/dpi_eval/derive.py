@@ -12,6 +12,7 @@ default, and formats other than jpg are rejected with 400.
 
 import hashlib
 import re
+import secrets
 from pathlib import Path
 
 from PIL import Image
@@ -95,7 +96,7 @@ def derive(master: Path, region: str, size: str, cache_dir: Path) -> Path:
                     img = img.resize((max(1, round(img.width * ratio)), spec[1]))
                 else:  # confined !w,h
                     img.thumbnail((spec[1], spec[2]))
-            tmp = out.with_suffix(".tmp")
+            tmp = out.with_suffix(f".{secrets.token_hex(4)}.tmp")
             img.save(tmp, format="JPEG", quality=90)
             tmp.replace(out)
     except DeriveError:

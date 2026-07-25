@@ -308,9 +308,7 @@ def create_app(
 
     @app.post("/grade-paths")
     async def grade_paths(request: Request):
-        token = os.environ.get("DPI_EVAL_TOKEN")
-        if not token or request.headers.get("X-DPI-Eval-Token") != token:
-            raise HTTPException(status_code=403)
+        _check_token(request)
 
         body = await request.json()
         gt_dir = Path(body["gt_dir"])
@@ -443,7 +441,7 @@ def create_app(
         _check_token(request, token)
         try:
             sess.confirm_session(trans_root, sid, [int(i) for i in pages_selected])
-        except sess.SessionError as exc:
+        except (sess.SessionError, ValueError) as exc:
             return HTMLResponse(pages.error_page(str(exc)), status_code=400)
         return RedirectResponse(f"/transcribe/sessions/{sid}", status_code=303)
 
@@ -506,7 +504,7 @@ def create_app(
                 sess.resolve_attention(trans_root, sid, n, action)
             else:
                 return HTMLResponse(pages.error_page("Unknown action."), status_code=400)
-        except sess.SessionError as exc:
+        except (sess.SessionError, ValueError) as exc:
             return HTMLResponse(pages.error_page(str(exc)), status_code=400)
         return RedirectResponse(f"/transcribe/sessions/{sid}", status_code=303)
 

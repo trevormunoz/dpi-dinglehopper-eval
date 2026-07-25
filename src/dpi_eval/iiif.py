@@ -52,16 +52,18 @@ def _service_id(service) -> str | None:
 
 def parse_manifest(doc: dict) -> list[CanvasRecord]:
     records: list[CanvasRecord] = []
+    canvas_count = 0
     if "sequences" in doc:  # Presentation v2
         for seq in doc.get("sequences", []):
             for canvas in seq.get("canvases", []):
+                canvas_count += 1
                 images = canvas.get("images", [])
                 if not images:
                     continue
                 resource = images[0].get("resource", {})
                 records.append(CanvasRecord(
                     canvas_id=canvas.get("@id", ""),
-                    label=str(canvas.get("label", "")),
+                    label=str(canvas.get("label") or ""),
                     image_url=resource.get("@id", ""),
                     image_service=_service_id(resource.get("service")),
                 ))
@@ -69,11 +71,16 @@ def parse_manifest(doc: dict) -> list[CanvasRecord]:
         for canvas in doc.get("items", []):
             if canvas.get("type") != "Canvas":
                 continue
+            canvas_count += 1
             body = None
             for page in canvas.get("items", []):
                 for anno in page.get("items", []):
-                    if isinstance(anno.get("body"), dict):
-                        body = anno["body"]
+                    body_candidate = anno.get("body")
+                    if isinstance(body_candidate, list) and body_candidate \
+                            and isinstance(body_candidate[0], dict):
+                        body_candidate = body_candidate[0]
+                    if isinstance(body_candidate, dict):
+                        body = body_candidate
                         break
                 if body:
                     break
@@ -87,6 +94,11 @@ def parse_manifest(doc: dict) -> list[CanvasRecord]:
             ))
     if not records:
         raise IIIFError("Manifest contains no canvases with images.")
+    if len(records) != canvas_count:
+        raise IIIFError(
+            f"Manifest has {canvas_count} canvases but only {len(records)} "
+            "with a usable image. Page numbering would drift against "
+            "page_{i}-style OCR — this manifest cannot be used as-is.")
     return records
 
 
