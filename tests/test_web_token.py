@@ -38,9 +38,43 @@ def test_run_and_register_writes_result_json(tmp_path):
     assert (run_dir / "result.json").exists()
 
 
-def test_existing_grade_still_works(tmp_path):
+def _grade_files():
+    return [("gt_files", ("page_0.gt.txt", b"hello\n")),
+            ("ocr_files", ("page_0.txt", b"hello\n"))]
+
+
+def test_grade_rejects_request_without_token(tmp_path, monkeypatch):
+    """PAR C2. /grade was the only mutating route with no _check_token.
+    multipart/form-data is CORS-safelisted, so any page could POST to it
+    with no preflight and drive the engine."""
+    monkeypatch.setenv("DPI_EVAL_TOKEN", "sekrit")
     client = TestClient(create_app(tmp_path))
-    response = client.post("/grade", files=[
-        ("gt_files", ("page_0.gt.txt", b"hello\n")),
-        ("ocr_files", ("page_0.txt", b"hello\n"))])
+    response = client.post("/grade", files=_grade_files())
+    assert response.status_code == 403
+
+
+def test_grade_accepts_request_with_form_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("DPI_EVAL_TOKEN", "sekrit")
+    client = TestClient(create_app(tmp_path))
+    response = client.post(
+        "/grade", files=_grade_files(), data={"token": "sekrit"})
     assert response.status_code in (200, 303)
+
+
+def test_grade_accepts_request_with_header_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("DPI_EVAL_TOKEN", "sekrit")
+    client = TestClient(create_app(tmp_path))
+    response = client.post(
+        "/grade", files=_grade_files(),
+        headers={"X-DPI-Eval-Token": "sekrit"})
+    assert response.status_code in (200, 303)
+
+
+def test_grading_form_embeds_the_token_so_browser_mode_still_posts(monkeypatch):
+    """web.py's own comment promised 'forms embed it as a hidden field
+    (CSRF)'; the grading form carried the token only in a <meta> tag for the
+    /grade-paths fetch, so the plain form POST had nothing to send."""
+    from dpi_eval import pages
+    page = pages.form_page(token="sekrit")
+    form = page[page.index('action="/grade"'):]
+    assert '<input type="hidden" name="token" value="sekrit">' in form

@@ -294,9 +294,16 @@ def create_app(
 
     @app.post("/grade")
     def grade(
+        request: Request,
+        token: str = Form(default=None),
         gt_files: list[UploadFile] = File(default=[]),
         ocr_files: list[UploadFile] = File(default=[]),
     ):
+        # Was the only mutating route with no token check. multipart/form-data
+        # is CORS-safelisted, so any page could POST here with no preflight
+        # and drive the engine; the Host header of such a request passes
+        # _host_guard. The served form now carries the token as a hidden field.
+        _check_token(request, token)
         try:
             run_dir = _grade_pipeline(gt_files, ocr_files, base_dir)
         except GradeValidationError as exc:

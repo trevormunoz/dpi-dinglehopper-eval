@@ -184,8 +184,10 @@ def _pct(value) -> str:
 def form_page(*, token: str | None = None) -> str:
     meta = f'<meta name="dpi-eval-token" content="{escape(token)}">\n' if token else ""
     # Plain (non-f) string: the inline script is full of `{}` literals, so
-    # kept un-escaped for readability. No Python interpolation happens here;
-    # the token is injected via `meta` in the document head instead.
+    # kept un-escaped for readability. Nothing is interpolated by f-string
+    # here; the token reaches the page via `meta` in the head (for the
+    # desktop fetch) and via the <!--HIDDEN_TOKEN--> placeholder below
+    # (for the plain browser form POST, which /grade now requires).
     body = """
 <h1>Grade OCR against ground truth</h1>
 <p><a href="/transcribe">Transcribe a sample</a></p>
@@ -211,6 +213,7 @@ file it grades. Only pages that have a ground-truth file are graded.</p>
 <form id="dpi-eval-form" action="/grade" method="post"
       enctype="multipart/form-data"
       onsubmit="if(window.__dpiStartGrading)window.__dpiStartGrading();">
+  <!--HIDDEN_TOKEN-->
   <fieldset id="gt-fieldset">
     <legend>1. Ground-truth folder</legend>
     <input type="file" id="gt_files" name="gt_files" webkitdirectory
@@ -386,6 +389,7 @@ terminal window it came from</span>.</footer>
 })();
 </script>
 """
+    body = body.replace("<!--HIDDEN_TOKEN-->", _hidden_token(token or ""))
     return _document("dpi-eval", body, extra_head=meta)
 
 

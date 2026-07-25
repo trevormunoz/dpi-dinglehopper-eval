@@ -4,15 +4,28 @@ import socket
 import zipfile
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from dpi_eval.web import create_app
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+# /grade requires the launch token (PAR C2). These tests drive it as the
+# served form does, so the client carries the token on every request.
+TEST_TOKEN = "test-token"
+
+
+@pytest.fixture(autouse=True)
+def _launch_token(monkeypatch):
+    monkeypatch.setenv("DPI_EVAL_TOKEN", TEST_TOKEN)
+
 
 def make_client(tmp_path) -> TestClient:
-    return TestClient(create_app(tmp_path / "runs"))
+    return TestClient(
+        create_app(tmp_path / "runs"),
+        headers={"X-DPI-Eval-Token": TEST_TOKEN},
+    )
 
 
 def _fixture_pair() -> tuple[bytes, bytes]:

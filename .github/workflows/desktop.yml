@@ -71,6 +71,12 @@ jobs:
           # ASCII fixture cannot exercise. No-op on POSIX runners.
           export PYTHONUTF8=1
 
+          # /grade requires the launch token (PAR C2). main() mints one when
+          # DPI_EVAL_TOKEN is unset and never prints it, so the harness must
+          # supply its own to authenticate the curl below. Static literal:
+          # no workflow input reaches this value.
+          export DPI_EVAL_TOKEN=ci-smoke-token
+
           LOG=server.log
           "$BIN/dpi-eval-web" --no-browser >"$LOG" 2>&1 &
           SERVER_PID=$!
@@ -92,6 +98,7 @@ jobs:
           fi
 
           RESPONSE=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' \
+            -H "X-DPI-Eval-Token: $DPI_EVAL_TOKEN" \
             -F "gt_files=@tests/fixtures/text/page_0.gt.txt;type=text/plain" \
             -F "ocr_files=@tests/fixtures/text/page_0.txt;type=text/plain" \
             "$URL/grade")
