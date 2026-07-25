@@ -806,7 +806,7 @@ def session_page(session: dict, problems: list[dict], token: str) -> str:
         rows.append(
             f'<tr><td><a href="/transcribe/sessions/{escape(session["id"])}/pages/{p["source_index"]}">'
             f'{escape(p["stem"])}</a></td><td>{escape(state)}{attention}</td>'
-            f'<td>{p["seconds_elapsed"]}s</td></tr>')
+            f'<td>{p["seconds_elapsed"]}s</td><td>{p["seconds_active"]}s</td></tr>')
     saved = sum(1 for p in session["pages"] if p["status"] == "saved")
     grade_bits = ""
     if problems:
@@ -828,7 +828,7 @@ def session_page(session: dict, problems: list[dict], token: str) -> str:
        mode: {escape(session["mode"])} — conventions v{session["conventions_version"]}.
        Timing shown below is recorded with each save and visible here — nothing
        is collected silently.</p>
-    <table><tr><th>Page</th><th>Status</th><th>Time</th></tr>{"".join(rows)}</table>
+    <table><tr><th>Page</th><th>Status</th><th>Time (elapsed)</th><th>Time (active)</th></tr>{"".join(rows)}</table>
     {grade_bits}
     <form method="post" action="/transcribe/sessions/{escape(session["id"])}/clone">
       {_hidden_token(token)}

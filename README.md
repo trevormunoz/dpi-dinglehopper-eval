@@ -158,10 +158,13 @@ so it can be dropped in directly rather than reorganized by hand.
 
 ### Timing disclosure
 
-Every save records how many seconds you spent on that page — both wall-
-clock elapsed time and active (typing) time — and both numbers are shown
-on the session page as you work. Nothing about how long a page took is
-collected silently or only visible after the fact.
+With each save, dpi-eval records two timing measurements per page: elapsed
+time (wall-clock seconds from page open to save) and active time (seconds
+of actual typing activity, with a 5-second idle threshold). Both numbers
+appear in your session page immediately after each save, in the "Time
+(elapsed)" and "Time (active)" columns. Both are also included in the
+export sidecar. Nothing about timing is collected silently or visible
+only after the fact.
 
 ## Command-line tool
 
