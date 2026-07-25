@@ -722,6 +722,14 @@ def _hidden_token(token: str) -> str:
     return f'<input type="hidden" name="token" value="{escape(token or "")}">'
 
 
+def _safe_url(url: str) -> str:
+    """Escape an externally sourced URL for an attribute, and refuse
+    non-http(s) schemes outright (manifest values are untrusted)."""
+    if not url or not url.startswith(("https://", "http://", "/")):
+        return ""
+    return escape(url, quote=True)
+
+
 def transcribe_home_page(sessions: list[dict], token: str) -> str:
     rows = "".join(
         f'<li><a href="/transcribe/sessions/{escape(s["id"])}">{escape(s["id"])}</a>'
@@ -843,12 +851,12 @@ def editor_page(session, page, draft, gt_text, token, position, notice=""):
                   'the OCR is what’s being graded.</strong></p>')
     notice_html = f"<p><em>{escape(notice)}</em></p>" if notice else ""
     sid, n = session["id"], page["source_index"]
-    image_src = (
+    image_src = _safe_url(
         f'{page["image_service"]}/full/!1200,1200/0/default.jpg'
         if page.get("image_service")
         else page.get("image_url")
         or f"/transcribe/sessions/{sid}/images/{n}/full/!1200,1200/0/default.jpg")
-    full_src = (
+    full_src = _safe_url(
         f'{page["image_service"]}/full/max/0/default.jpg'
         if page.get("image_service")
         else page.get("image_url")

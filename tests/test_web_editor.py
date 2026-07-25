@@ -21,11 +21,11 @@ def setup(tmp_path, monkeypatch):
     sid = response.text.split('data-session-id="', 1)[1].split('"', 1)[0]
     client.post(f"/transcribe/sessions/{sid}/confirm",
                 data={"token": "tok", "pages": ["0", "1"]})
-    return client, sid
+    return client, sid, folder
 
 
 def test_editor_page_has_substitution_defenses(setup):
-    client, sid = setup
+    client, sid, _folder = setup
     response = client.get(f"/transcribe/sessions/{sid}/pages/0")
     assert response.status_code == 200
     for attr in ('spellcheck="false"', 'autocorrect="off"', 'autocapitalize="off"'):
@@ -33,7 +33,7 @@ def test_editor_page_has_substitution_defenses(setup):
 
 
 def test_save_no_text_and_flag_actions(setup):
-    client, sid = setup
+    client, sid, _folder = setup
     save = client.post(f"/transcribe/sessions/{sid}/pages/0", data={
         "token": "tok", "action": "save", "text": "Line one\nLine two",
         "elapsed": "12", "active": "8", "nonce": "n1"}, follow_redirects=False)
@@ -51,7 +51,7 @@ def test_save_no_text_and_flag_actions(setup):
 
 
 def test_image_endpoint_derives_tiff_to_jpeg(setup):
-    client, sid = setup
+    client, sid, _folder = setup
     response = client.get(
         f"/transcribe/sessions/{sid}/images/0/full/max/0/default.jpg")
     assert response.status_code == 200
@@ -63,7 +63,44 @@ def test_image_endpoint_derives_tiff_to_jpeg(setup):
 
 
 def test_image_endpoint_rejects_unimplemented(setup):
-    client, sid = setup
+    client, sid, _folder = setup
     response = client.get(
         f"/transcribe/sessions/{sid}/images/0/full/max/90/default.jpg")
     assert response.status_code == 400
+
+
+def test_editor_page_escapes_hostile_manifest_image_urls(tmp_path):
+    from dpi_eval import pages, sessions as sess
+    from dpi_eval.iiif import CanvasRecord
+
+    root = sess.transcriptions_root(tmp_path)
+    hostile = 'https://x/i/0" onerror="alert(1)'
+    records = [CanvasRecord("https://x/c/0", "Page 0", hostile, None)]
+    session = sess.create_iiif_session(root, "https://x/m", records, "from_scratch", "")
+    sess.confirm_session(root, session["id"], [0])
+    session = sess.load_session(root, session["id"])
+    page = session["pages"][0]
+    html_out = pages.editor_page(session, page, "", "", "tok", "Page 1 of 1")
+    assert 'onerror="alert(1)' not in html_out
+
+
+def test_editor_page_refuses_javascript_scheme_image_url(tmp_path):
+    from dpi_eval import pages, sessions as sess
+    from dpi_eval.iiif import CanvasRecord
+
+    root = sess.transcriptions_root(tmp_path)
+    records = [CanvasRecord("https://x/c/0", "Page 0", "javascript:alert(1)", None)]
+    session = sess.create_iiif_session(root, "https://x/m", records, "from_scratch", "")
+    sess.confirm_session(root, session["id"], [0])
+    session = sess.load_session(root, session["id"])
+    page = session["pages"][0]
+    html_out = pages.editor_page(session, page, "", "", "tok", "Page 1 of 1")
+    assert "javascript:" not in html_out
+
+
+def test_image_info_returns_json_500_for_corrupt_master(setup):
+    client, sid, folder = setup
+    (folder / "a.tif").write_bytes(b"junk not an image")
+    response = client.get(f"/transcribe/sessions/{sid}/images/0/info.json")
+    assert response.status_code == 500
+    assert "error" in response.json()

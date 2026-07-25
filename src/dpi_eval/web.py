@@ -519,6 +519,8 @@ def create_app(
             session = sess.load_session(trans_root, sid)
             page = sess.page_by_index(session, n)
             width, height = derive.image_dims(_local_master(session, page))
+        except derive.DeriveError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=exc.status)
         except (sess.SessionError, KeyError, OSError):
             return JSONResponse({"error": "no such image"}, status_code=404)
         base = f"http://{request.headers.get('host')}/transcribe/sessions/{sid}/images/{n}"
