@@ -575,3 +575,87 @@ def test_style_hidden_attribute_wins_over_display_flex():
     # hidden confirmation row (checkmark included) bleeds through on
     # the empty form.
     assert "[hidden] { display: none !important; }" in pages._STYLE
+
+
+# --- Native folder pickers on the transcription pages (QA finding F1) ------
+#
+# The grading form has had a native picker since task 9b; the transcription
+# pages shipped with bare typed-path inputs, so a human had to type a
+# filesystem path by hand. capabilities/remote-dialog.json already grants
+# dialog:allow-open to these very pages, so the plumbing existed and simply
+# went unused.
+
+
+def _saved_session() -> dict:
+    """Minimal session with one saved page, so the grade form renders."""
+    return {
+        "id": "s-20260725-000000-abcd",
+        "collection": "qa",
+        "mode": "from_scratch",
+        "conventions_version": 1,
+        "pages": [
+            {"stem": "page_0001", "source_index": 0, "status": "saved",
+             "flagged": False, "seconds_elapsed": 12, "seconds_active": 9},
+        ],
+    }
+
+
+def test_transcribe_home_offers_native_pickers_for_both_folder_fields():
+    page = pages.transcribe_home_page([], "tok")
+    for field in ("folder", "draft_folder"):
+        assert f'id="{field}-picker-btn"' in page
+        assert f'aria-describedby="{field}-picker-path"' in page
+        assert f'id="{field}-picker-path"' in page
+
+
+def test_session_page_offers_native_picker_for_the_ocr_folder():
+    page = pages.session_page(_saved_session(), [], "tok")
+    assert 'id="ocr_folder-picker-btn"' in page
+    assert 'aria-describedby="ocr_folder-picker-path"' in page
+
+
+def test_transcription_pickers_are_real_buttons_hidden_until_tauri_detected():
+    # Hidden server-side, revealed by the load handler only when the native
+    # dialog is actually available — a browser user must never see a button
+    # that cannot work.
+    page = pages.transcribe_home_page([], "tok")
+    assert '<button type="button" id="folder-picker-btn" hidden' in page
+
+
+def test_transcription_picker_requests_a_directory_dialog():
+    page = pages.transcribe_home_page([], "tok")
+    assert "dialog.open({directory: true})" in page
+
+
+def test_transcription_picker_probes_tauri_inside_load_handler_not_top_level():
+    # Same tauri#12990 footgun the grading form guards against: init-script
+    # ordering has raced page scripts, so window.__TAURI__ must only be
+    # touched inside a load listener. This is one of the three chrome-level
+    # failures already paid for on this branch — do not regress it.
+    for page in (pages.transcribe_home_page([], "tok"),
+                 pages.session_page(_saved_session(), [], "tok")):
+        script_start = page.index("<script>")
+        load_idx = page.index("addEventListener('load'", script_start)
+        tauri_idx = page.index("__TAURI__", script_start)
+        assert load_idx < tauri_idx
+
+
+def test_transcription_pages_keep_typed_inputs_for_browser_mode():
+    # Browser mode has no native dialog, so the typed field stays the
+    # control of record there and must still submit under its own name.
+    page = pages.transcribe_home_page([], "tok")
+    for field in ("folder", "draft_folder"):
+        assert f'name="{field}"' in page
+    assert 'name="ocr_folder"' in pages.session_page(_saved_session(), [], "tok")
+
+
+def test_transcription_picker_writes_the_chosen_path_into_the_input():
+    # The picked path must land in the text input the form already posts;
+    # nothing else should be needed to make the existing POST carry it.
+    page = pages.transcribe_home_page([], "tok")
+    assert "input.value = selected" in page
+
+
+def test_transcription_picker_has_no_iframe():
+    assert "<iframe" not in pages.transcribe_home_page([], "tok")
+    assert "<iframe" not in pages.session_page(_saved_session(), [], "tok")

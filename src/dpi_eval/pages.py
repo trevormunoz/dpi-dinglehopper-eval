@@ -730,6 +730,75 @@ def _safe_url(url: str) -> str:
     return escape(url, quote=True)
 
 
+# --- Native folder pickers for the transcription pages ---------------------
+#
+# The grading form's wirePicker() (see form_page) swaps a webkitdirectory
+# file input for the native dialog. These fields are different: they are
+# already plain text paths that the form posts as-is, so the picker only has
+# to write the chosen path into the input — no separate paths endpoint.
+# capabilities/remote-dialog.json already grants dialog:allow-open to these
+# sidecar-served pages.
+
+
+def _picker_field(field: str, label: str, button: str) -> str:
+    """A typed path input (browser mode) plus a native picker button that
+    the load handler reveals only when the Tauri dialog is available."""
+    return f"""
+      <p id="{field}-typed"><label>{label}
+        <input id="{field}" name="{field}"></label></p>
+      <button type="button" id="{field}-picker-btn" hidden
+              aria-describedby="{field}-picker-path">{button}&hellip;</button>
+      <div id="{field}-picker-path" class="picked" hidden>
+        <span class="picked-check" aria-hidden="true">&#10003;</span>
+        <span class="picked-name"></span>
+        <span class="picked-path"></span>
+      </div>"""
+
+
+# __TAURI__ is touched only inside the load handler: init-script ordering has
+# raced page scripts before (tauri#12990), which was one of this branch's
+# chrome-level failures. Do not hoist the probe.
+_PICKER_SCRIPT = """<script>
+(function () {
+  window.addEventListener('load', function () {
+    if (!window.__TAURI__) return;
+    __FIELDS__.forEach(function (field) {
+      var input = document.getElementById(field);
+      var typed = document.getElementById(field + '-typed');
+      var btn = document.getElementById(field + '-picker-btn');
+      var pathEl = document.getElementById(field + '-picker-path');
+      if (!input || !btn || !pathEl) return;
+      if (typed) typed.hidden = true;
+      btn.hidden = false;
+      btn.addEventListener('click', function () {
+        window.__TAURI__.dialog.open({directory: true}).then(
+          function (selected) {
+            if (!selected) return;
+            input.value = selected;
+            var parts = selected.split(/[/\\\\]/).filter(Boolean);
+            pathEl.querySelector('.picked-name').textContent =
+              parts.length ? parts[parts.length - 1] : selected;
+            pathEl.querySelector('.picked-path').textContent = selected;
+            pathEl.hidden = false;
+          },
+          function (err) {
+            // Never strand the user: restore the typed field as the fallback.
+            if (typed) typed.hidden = false;
+            btn.hidden = true;
+          }
+        );
+      });
+    });
+  });
+})();
+</script>"""
+
+
+def _picker_script(fields: tuple[str, ...]) -> str:
+    listing = "[" + ", ".join(f"'{f}'" for f in fields) + "]"
+    return _PICKER_SCRIPT.replace("__FIELDS__", listing)
+
+
 def transcribe_home_page(sessions: list[dict], token: str) -> str:
     rows = "".join(
         f'<li><a href="/transcribe/sessions/{escape(s["id"])}">{escape(s["id"])}</a>'
@@ -749,17 +818,19 @@ def transcribe_home_page(sessions: list[dict], token: str) -> str:
           <option value="local">Local image folder (desktop)</option>
           <option value="iiif">IIIF manifest URL</option>
         </select></label></p>
-      <p><label>Local folder path <input name="folder"></label></p>
+      {_picker_field("folder", "Local image folder", "Choose image folder")}
       <p><label>Manifest URL <input name="manifest_url" placeholder="https://…"></label></p>
       <p><label>Mode
         <select name="mode">
           <option value="from_scratch">Type from scratch</option>
           <option value="corrected">Correct a machine draft</option>
         </select></label></p>
-      <p><label>Draft folder (correction mode, desktop) <input name="draft_folder"></label></p>
+      {_picker_field("draft_folder", "Draft folder (correction mode)",
+                     "Choose draft folder")}
       <p><label>Collection / handle (optional) <input name="collection"></label></p>
       <p><button type="submit">List pages</button></p>
     </form>
+    {_picker_script(("folder", "draft_folder"))}
     """
     return _document("Transcribe — dpi-eval", body)
 
@@ -818,10 +889,11 @@ def session_page(session: dict, problems: list[dict], token: str) -> str:
         <form method="post" action="/transcribe/sessions/{escape(session["id"])}/grade/preview"
               enctype="multipart/form-data">
           {_hidden_token(token)}
-          <p><label>OCR folder path (desktop) <input name="ocr_folder"></label>
-             or upload files <input type="file" name="ocr_files" multiple></p>
+          {_picker_field("ocr_folder", "OCR folder", "Choose OCR folder")}
+          <p>or upload files <input type="file" name="ocr_files" multiple></p>
           <p><button type="submit">Preview grade alignment</button></p>
-        </form>"""
+        </form>
+        {_picker_script(("ocr_folder",))}"""
     body = f"""
     <h1>Session {escape(session["id"])}</h1>
     <p>{escape(session.get("collection") or "No collection label")} —
