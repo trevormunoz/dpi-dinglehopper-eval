@@ -267,6 +267,19 @@ failure class `desktop/PROBE-CHECKLIST.md` exists to catch. Candidate
 mitigations (not implemented): refuse to delete a venv that has a live
 process, or reap a stale sidecar before rebuilding.
 
+**Reproduced at the end of the session, which raises confidence in it.** On
+shutting the app down, the sidecar was left running again
+(`…/venv/bin/dpi-eval-web --no-browser`, still alive after the app process
+was gone) and had to be killed by PID. So the orphan is not a one-off from
+the mid-session restart: whenever the app dies without a graceful quit — a
+crash, a force-quit, an OS kill — the sidecar survives it. Combine that with
+a payload update on next launch (an app upgrade being the obvious real-world
+trigger) and F4 fires.
+
+The two halves are each harmless and jointly a dead end for a user with no
+terminal: nothing reaps the sidecar, and `ensure_venv` deletes the venv
+without checking whether anything is running out of it.
+
 Not a WKWebView chrome failure.
 
 ### F5 — Editor page controls overlap at the bottom of the window
