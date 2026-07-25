@@ -351,3 +351,34 @@ judging OCR text's accessibility as a *content* concern.
 `--differences` unlock) are landed and CI-verified on both platforms;
 the UX pass is implemented and gate-passed. Pilot documentation
 (README) followed this entry.
+
+## 11. Transcription editor — implemented per spec, pilot evidence hooks now in place
+
+**Source (2026-07-25).** `docs/superpowers/specs/2026-07-24-transcription-editor-design.md`.
+
+**What shipped.** The transcription editor described in the spec is
+implemented: sessions started from a local image folder or a IIIF
+manifest (v2/v3), source-as-queue page selection at create, line-for-line
+typing under a versioned conventions record (`v1`), no-text pages marked
+with a required reason (blank / image_only / illegible), flag-for-
+supervisor, alignment-staged grading through the existing engine
+(unmatched pages excluded from scoring, mispairs fixable by dropdown
+before confirming), clone-other-arm for the two-arm pilot design,
+collection-labeled zip export for the GT repository, and a per-launch
+token guarding both the desktop and web entry points.
+
+**Pilot evidence hooks.** Four things are now recorded automatically so
+the pilot's evidence plan doesn't depend on remembering to log them by
+hand: per-page `seconds_elapsed` and `seconds_active` on every save (and
+shown on the session page, not just stored), the no-text reason taken at
+face value as a data-quality signal rather than inferred after the fact,
+the conventions version (`v1`) stamped onto each session so a future
+convention change doesn't silently mix incompatible ground truth, and
+which arm (of the two-arm pilot) produced a given session recorded with
+it.
+
+**Status.** Implemented and unit-tested; manual desktop QA (JP2 master
+folder session, IIIF session against a real UMD manifest, smart-quote
+substitution check, no-text/illegible marking, alignment override,
+export inspection) is still pending — see the task-12 report for the
+checklist.

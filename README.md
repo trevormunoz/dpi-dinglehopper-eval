@@ -96,6 +96,73 @@ usual.
    it goes to your **Downloads folder**, same as any other file you
    download in a browser.
 
+## Transcribing a sample
+
+Before a page can be graded, someone has to type what it actually says —
+that's the ground truth. dpi-eval's transcription editor is where that
+happens: it walks a typist through a sample of pages, one at a time, and
+produces a `gt/` folder in the naming convention the grading step above
+expects.
+
+### Starting a session
+
+From the desktop app or the browser interface (`uv run dpi-eval-web`),
+start a session from either source:
+
+- **A local image folder** — point the app at a folder of page images on
+  disk.
+- **A IIIF manifest URL** — point the app at a published IIIF manifest
+  (v2 or v3); dpi-eval fetches the page images from it.
+
+Either way, you pick the sample pages when you create the session — the
+transcription queue is exactly the set of pages you tick. There's no
+separate "which pages count" step later: what you select at create is
+what you'll be asked to transcribe.
+
+### Typing a page
+
+Type what the page actually says, one printed line at a time. **Press
+Enter at the end of each printed line.** This line-for-line convention
+(recorded with the session as a versioned convention, `v1`) is what lets
+the grading step align your ground truth against the OCR's own line
+breaks — typing a page as one long paragraph, or reflowing lines to look
+tidier, breaks that alignment.
+
+If a page has no text to transcribe, mark it instead of typing something
+that isn't there — you'll be asked for a reason: **blank**, **image
+only**, or **illegible**. Recording *why* a page has no text is what
+turns an empty ground-truth entry into an intentional decision another
+reviewer can trust, rather than something that looks like it was simply
+skipped.
+
+If a page is confusing or you're not sure how to transcribe it, flag it
+for a supervisor instead of guessing — the flag travels with the page
+so a supervisor can resolve it before the sample is graded.
+
+### Grading the sample
+
+Once transcription is done, grading runs through an alignment preview
+before anything is scored: dpi-eval lines up your ground-truth pages
+against the OCR output and shows you the pairing it found. Pages it
+couldn't match are left unmatched and are **not** graded — they don't
+silently count as failures or successes. If the preview mispairs two
+pages, fix it with the dropdown controls shown for each row before you
+confirm; only after you confirm does the alignment get graded through
+the same engine described above.
+
+### Exporting for the ground-truth repository
+
+When a session is ready to hand off, export it as a zip labeled by
+collection — this is the same folder layout the GT repository expects,
+so it can be dropped in directly rather than reorganized by hand.
+
+### Timing disclosure
+
+Every save records how many seconds you spent on that page — both wall-
+clock elapsed time and active (typing) time — and both numbers are shown
+on the session page as you work. Nothing about how long a page took is
+collected silently or only visible after the fact.
+
 ## Command-line tool
 
 Colleagues who already have the one-line command from an earlier

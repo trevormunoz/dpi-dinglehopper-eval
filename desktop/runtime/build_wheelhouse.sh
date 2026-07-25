@@ -2,6 +2,14 @@
 # Build the offline wheelhouse (wheels only). --probe = this repo's wheel +
 # the minimal web deps (fastapi/uvicorn/python-multipart/lxml — lxml because
 # dpi_eval.adapter imports it at module scope), minus dinglehopper.
+#
+# Full mode (default, no --probe) pulls every runtime dependency straight
+# from pyproject.toml via `uv export` below — nothing is hand-enumerated
+# here. That includes Pillow (added as a runtime dependency for the
+# transcription editor's image handling): its manylinux wheel bundles its
+# own OpenJPEG (JP2) and libtiff (TIFF) shared libraries, so no separate
+# system-library step is needed for those formats to decode in the bundled
+# runtime.
 set -euo pipefail
 cd "$(dirname "$0")"
 REPO_ROOT="$(cd ../.. && pwd)"
