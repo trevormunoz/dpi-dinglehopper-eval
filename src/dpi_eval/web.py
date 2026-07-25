@@ -513,6 +513,83 @@ def create_app(
     def _local_master(session, page) -> Path:
         return Path(session["source"]["path"]) / page["image_file"]
 
+    @app.post("/transcribe/sessions/{sid}/grade/preview", response_class=HTMLResponse)
+    async def grade_preview(sid: str, request: Request):
+        form = await request.form()
+        _check_token(request, form.get("token"))
+        files: list[tuple[str, bytes]] = []
+        ocr_folder = str(form.get("ocr_folder") or "").strip()
+        if ocr_folder:
+            folder = Path(ocr_folder)
+            if not folder.is_dir():
+                return HTMLResponse(
+                    pages.error_page(f"Not a readable directory: {folder}"),
+                    status_code=400)
+            files = [(u.filename, u.file.read()) for u in _enumerate_dir(folder)]
+        else:
+            for upload in form.getlist("ocr_files"):
+                if getattr(upload, "filename", None):
+                    files.append((upload.filename, upload.file.read()))
+        if not files:
+            return HTMLResponse(
+                pages.error_page("Pick the OCR folder or upload OCR files."),
+                status_code=400)
+        try:
+            session = sess.load_session(trans_root, sid)
+            alignment = sess.stage_ocr(trans_root, sid, files)
+        except sess.SessionError as exc:
+            return HTMLResponse(pages.error_page(str(exc)), status_code=400)
+        return pages.alignment_page(session, alignment, _token())
+
+    @app.post("/transcribe/sessions/{sid}/grade/confirm")
+    async def grade_confirm(sid: str, request: Request):
+        form = await request.form()
+        _check_token(request, form.get("token"))
+        overrides = {
+            key[len("override_"):]: str(value)
+            for key, value in form.items() if key.startswith("override_")}
+        try:
+            gt_dir, ocr_dir = sess.stage_for_grade(trans_root, sid, overrides)
+            run_dir = _run_and_register(gt_dir, ocr_dir, base_dir)
+        except sess.SessionError as exc:
+            return HTMLResponse(pages.error_page(str(exc)), status_code=400)
+        finally:
+            sess.clear_staging(trans_root, sid)
+        return RedirectResponse(f"/runs/{run_dir.name}", status_code=303)
+
+    @app.post("/transcribe/sessions/{sid}/clone")
+    def clone_session(sid: str, request: Request, token: str = Form(default=None)):
+        _check_token(request, token)
+        try:
+            source = sess.load_session(trans_root, sid)
+            other_mode = "corrected" if source["mode"] == "from_scratch" else "from_scratch"
+            selected = [p["source_index"] for p in source["pages"]]
+            if source["source"]["type"] == "local":
+                clone = sess.create_local_session(
+                    trans_root, Path(source["source"]["path"]), other_mode,
+                    source["collection"],
+                    Path(source["draft_source"]) if source.get("draft_source") else None)
+            else:
+                records = iiif.parse_manifest(
+                    iiif.fetch_manifest(source["source"]["manifest_url"]))
+                clone = sess.create_iiif_session(
+                    trans_root, source["source"]["manifest_url"], records,
+                    other_mode, source["collection"])
+            sess.confirm_session(trans_root, clone["id"], selected)
+        except (sess.SessionError, iiif.IIIFError) as exc:
+            return HTMLResponse(pages.error_page(str(exc)), status_code=400)
+        return RedirectResponse(f"/transcribe/sessions/{clone['id']}", status_code=303)
+
+    @app.post("/transcribe/sessions/{sid}/export")
+    def export(sid: str, request: Request, token: str = Form(default=None)):
+        _check_token(request, token)
+        try:
+            archive = sess.export_session(trans_root, sid)
+        except sess.SessionError as exc:
+            return HTMLResponse(pages.error_page(str(exc)), status_code=400)
+        return FileResponse(archive, media_type="application/zip",
+                            filename=archive.name)
+
     @app.get("/transcribe/sessions/{sid}/images/{n}/info.json")
     def image_info(sid: str, n: int, request: Request):
         try:

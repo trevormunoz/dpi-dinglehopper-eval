@@ -843,6 +843,40 @@ def session_page(session: dict, problems: list[dict], token: str) -> str:
     return _document(f"Session {session['id']} — dpi-eval", body)
 
 
+def alignment_page(session: dict, alignment: dict, token: str) -> str:
+    unmatched_files = alignment["unmatched_files"]
+    rows = []
+    for page in session["pages"]:
+        if page["status"] != "saved":
+            continue
+        matched = alignment["matched"].get(page["stem"])
+        if matched:
+            cell = escape(matched)
+        elif unmatched_files:
+            options = "".join(
+                f'<option value="{escape(f)}">{escape(f)}</option>'
+                for f in unmatched_files)
+            cell = (f'<select name="override_{escape(page["stem"])}">'
+                    f'<option value="">— unmatched —</option>{options}</select>')
+        else:
+            cell = "<em>unmatched — this page will not be graded</em>"
+        rows.append(f"<tr><td>{escape(page['stem'])}</td><td>{cell}</td></tr>")
+    leftover = ", ".join(escape(f) for f in unmatched_files) or "none"
+    body = f"""
+    <h1>Check the alignment before grading</h1>
+    <p>Each saved page pairs with one OCR file. Fix any mispair with the
+    dropdowns — nothing is graded until you confirm.</p>
+    <form method="post" action="/transcribe/sessions/{escape(session["id"])}/grade/confirm">
+      {_hidden_token(token)}
+      <table><tr><th>Page</th><th>OCR file</th></tr>{"".join(rows)}</table>
+      <p>Unmatched OCR files: {leftover}</p>
+      <p><button type="submit">Grade</button>
+         <a href="/transcribe/sessions/{escape(session["id"])}">Cancel</a></p>
+    </form>
+    """
+    return _document("Alignment preview — dpi-eval", body)
+
+
 def editor_page(session, page, draft, gt_text, token, position, notice=""):
     initial = gt_text or draft
     banner = ""
