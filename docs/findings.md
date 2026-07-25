@@ -382,3 +382,41 @@ folder session, IIIF session against a real UMD manifest, smart-quote
 substitution check, no-text/illegible marking, alignment override,
 export inspection) is still pending — see the task-12 report for the
 checklist.
+
+## 12. IIIF manifest parsing stays hand-rolled through the pilot — with an adopt trigger
+
+**Source (2026-07-25).** Review challenge during the transcription-editor
+build ("we should not have rolled our own parser when there are maintained
+parsers from IIIF available"), resolved with a dependency-resolution check
+against PyPI rather than assertion.
+
+**The challenge is half-right.** `iiif-prezi3` — the IIIF community's
+official Python library for Presentation v3 — is actively maintained
+(3.1.1, released 2026-05-14), pydantic-based (pydantic is already in our
+tree via FastAPI), and would cost roughly one wheel. The original
+"offline wheelhouse blocks it" argument was about iiif_ocr's
+PaddleOCR/OpenCV chain and does not apply to this library. Two measured
+facts kept the hand-rolled parser anyway, for now:
+
+1. **It parses the version we don't receive.** iiif-prezi3 is v3-only.
+   UMD's collections serve Presentation v2 (the reason iiif_ocr is
+   functionally v2-only), and the official v2 ecosystem is dormant: the
+   `iiif-prezi` v2 library is unmaintained and the official v2-to-v3
+   upgrader is not published on PyPI at all. Adopting the maintained
+   parser would replace our speculative v3 branch and leave the
+   load-bearing v2 branch hand-rolled regardless.
+2. **It pins `Pillow<=12.0.0`.** A dry-run resolution shows adoption
+   today would downgrade Pillow 12.3.0 to 12.0.0 — trading patch
+   releases of the codec stack that decodes the pilot's JP2 masters for
+   a parser of manifests we don't receive.
+
+**Adopt trigger (decision, Trevor 2026-07-25).** Keep the hand-rolled
+parser through the pilot. Swap the v3 branch to iiif-prezi3 when either
+UMD serves Presentation v3 or the Pillow ceiling lifts — whichever comes
+first; the v2 branch retires when v2 does. `tests/test_iiif.py` is the
+contract for the swap. Trevor is separately looking into why UMD still
+serves v2. The honest cost of the interim position is on record: task
+reviews, not our own tests, caught the Choice-body, null-label, and
+canvas-count-drift gaps a maintained parser might have handled — if UMD
+manifests keep finding parser gaps during the pilot, that is additional
+pressure toward the trigger.
