@@ -262,3 +262,124 @@ failure list only catches unreadable-at-the-OS-level inputs (see
 **Upstream candidate.** A dinglehopper `--strict-format` flag (error instead of
 plain-text fallback on unparseable XML) would let wrappers distinguish "bad
 recognition" from "bad file." Small, opt-in, mergeable.
+
+## 10. Beyond CER/WER — reading order and structure as measurable things — design note
+
+**Source (2026-07-25).** T. Muñoz: reading order and structure are essential to
+real text alternatives; dinglehopper measures only CER/WER. What could the system
+measure to reach those requirements?
+
+**Observation.** CER and WER are string metrics over a *flattened token stream*.
+They map to **no** WCAG success criterion. The claims DPI actually has to make
+about a digitized page map to criteria that CER/WER cannot see at all:
+
+| Requirement | WCAG | Currently measured? |
+|---|---|---|
+| Content is read in a meaningful sequence | 1.3.2 (A) | No — order errors surface as unexplained WER |
+| Headings, lists, tables, captions carry their roles | 1.3.1 (A) | No |
+| Non-text content has a text alternative | 1.1.1 (A) | No — figures are invisible to the pipeline |
+| Language of page / of parts is declared | 3.1.1 (A), 3.1.2 (AA) | No |
+| Headings describe their section | 2.4.6 (AA) | No — a headline error and a body-text error weigh the same |
+
+Findings §7 is this problem in miniature: ~half the measured error was line
+*layout*, not recognition, and the metric could not say so. Reading order is the
+same failure mode one level up — a two-column newspaper serialized straight
+across the gutter scores like catastrophic recognition failure, and a perfectly
+recognized page with scrambled block order is indistinguishable from a badly
+recognized one.
+
+**Structural blocker in this repo (verified in source, 2026-07-25).** Everything
+these metrics need is discarded *before* scoring. `adapter.hocr_to_text` selects
+`ocr_line` elements and keeps their text content only — bboxes, classes, and the
+whole hOCR logical vocabulary (`ocr_carea`, `ocr_par`, `ocr_title`, `ocr_caption`)
+are dropped; dinglehopper flattens ALTO the same way on its own side. So structure
+work reads the **original** OCR path, *in parallel with* dinglehopper, never
+through it. This is explicitly **not** upstream work: dinglehopper is a text-diff
+tool by design, and asking it to grade layout would be asking it to become a
+different tool.
+
+The `.hocr` test fixture already demonstrates the cheapest available signal:
+
+    <meta name="ocr-capabilities" content="ocr_page ocr_line ocrx_word" />
+
+The producer *declares in machine-readable form* that it emits no logical
+structure — no paragraphs, no headings, no captions, no reading order. The hOCR
+and ALTO/PAGE formats all support far more than the engines populate.
+
+### Tier 1 — Structure audit, no ground truth at all (recommended first build)
+
+Reference-free inspection of the OCR files themselves, so it runs over **100% of
+a collection**, not the 10–20 sampled pages. Per page, count and locate:
+
+- region typing present at all (ALTO `TextBlock`/`Illustration`/`ComposedBlock`
+  and `@TYPE`; PAGE `TextRegion/@type`; hOCR `ocr_carea`/`ocr_par`/`ocr_title`)
+- explicit reading order (PAGE `<ReadingOrder>`/`OrderedGroup`; ALTO relies on
+  document order — confirm against the ALTO 4 schema before asserting)
+- language declared (`@LANG`, `xml:lang`) — 3.1.1/3.1.2 are unachievable without it
+- graphics/illustration regions with no adjacent caption region → a *counted*
+  alt-text backlog, which is the quantitative hook finding §6 currently lacks
+- hyphenation recorded (`<HYP>`, `SUBS_TYPE`/`SUBS_CONTENT`) — without it,
+  de-wrapping downstream is lossy guesswork, which is findings §7 made structural
+- confidence data (`WC`/`CC`) — enables no-GT triage
+- geometric order anomalies: serialized stream jumping back up the page by more
+  than a line height without a column transition (needs coordinates only)
+
+**Why first.** No GT authoring cost, no new file format, full-collection coverage,
+and it answers the question the vendor conversation actually turns on — not "how
+good is this recognition" but *"can anything accessible ever be built from these
+files?"* A vendor deliverable with zero region typing and no `@LANG` can never
+produce a conformant tagged PDF or EPUB no matter how low its CER goes. That is a
+procurement-grade finding, and today nothing in the system can state it.
+
+### Tier 2 — Reading-order decomposition, using the plain-text GT already required
+
+Align OCR lines to GT lines by content, then measure the *permutation* between the
+two sequences — longest-increasing-subsequence ratio (fraction of lines in correct
+relative order) and/or Kendall's tau. Reported alongside a decomposition:
+
+    raw WER  =  recognition WER  +  wrap cost (§7)  +  order cost
+
+where order cost is the gap between as-serialized WER and WER after optimally
+reordering the aligned lines. This turns "your WER is 9%" into "6.9% recognition,
+1.4% line wrapping, 0.7% reading order" — three different people's problem.
+Continues the §7 de-wrapper machinery rather than starting a new one.
+
+### Tier 3 — Structured ground truth
+
+Plain-text GT *cannot express structure*, so per-region metrics need a richer GT.
+Cheapest credible format for student transcribers: a Markdown sidecar
+(`<stem>.gt.md`) — `#` heading, `-` list, `|` table, blank-line paragraph,
+`![]()` figure. Then heading-detection F1, paragraph-segmentation score, table
+structure similarity (TEDS is the standard for that), and **WER by region class**
+— headline WER reported separately from body WER, since an error in a heading
+costs navigation and search in a way a body-text error does not. Pairs with the
+significant-word/proper-noun idea already in §7's implications.
+
+### Tier 4 — Conformance of the delivered artifact
+
+The accessibility deliverable is never the ALTO; it is what gets served. Emit the
+target artifact and run an established checker rather than inventing a score —
+veraPDF for PDF/UA, DAISY Ace for EPUB, axe/pa11y for viewer HTML. Anchors the
+whole exercise to a real standard.
+
+### Reporting constraints (carry the existing display contract forward)
+
+- **Separate namespace.** Write `<stem>.structure.json` beside dinglehopper's
+  `<stem>.json`; never merge into or shadow its schema. The web display rule
+  becomes "every number has exactly one producer," which preserves the current
+  "display only, never recompute" contract.
+- **Defects, not a score.** Report counts with page pointers, so someone can act.
+  A rolled-up "accessibility score" would violate the results-display rule against
+  collapsing to one figure — and would be the kind of number that flatters.
+- **Different denominators.** Tier 1 covers every page; Tiers 2–3 cover the GT
+  sample. Show both, per the existing sample-honesty rule.
+
+**Trigger to build.** Tier 1 on the first vendor collection where the question
+"is this deliverable usable for accessibility?" is asked of real files — it needs
+no GT, so the vendor collections named in §4 are ready today. Tiers 2–3 wait on
+the §7 de-wrapper generalizing beyond one article. Tier 4 waits on a delivery
+artifact existing to check.
+
+**Status.** Design note only; no code. Version-specific format claims above
+(ALTO 4 reading order, exact attribute levels for `@LANG`) are stated from the
+format specs and **not yet verified against real files** — verify before building.
