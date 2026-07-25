@@ -581,7 +581,8 @@ def test_style_hidden_attribute_wins_over_display_flex():
 #
 # The grading form has had a native picker since task 9b; the transcription
 # pages shipped with bare typed-path inputs, so a human had to type a
-# filesystem path by hand. capabilities/remote-dialog.json already grants
+# filesystem path by hand. capabilities/remote.json (identifier `remote-dialog`)
+# already grants
 # dialog:allow-open to these very pages, so the plumbing existed and simply
 # went unused.
 
@@ -627,17 +628,17 @@ def test_transcription_picker_requests_a_directory_dialog():
     assert "dialog.open({directory: true})" in page
 
 
-def test_transcription_picker_probes_tauri_inside_load_handler_not_top_level():
-    # Same tauri#12990 footgun the grading form guards against: init-script
-    # ordering has raced page scripts, so window.__TAURI__ must only be
-    # touched inside a load listener. This is one of the three chrome-level
-    # failures already paid for on this branch — do not regress it.
+def test_transcription_pages_carry_the_picker_script():
+    # The tauri#12990 guard that used to live here compared the first
+    # textual offset of the load listener against the first offset of
+    # __TAURI__. That tests ordering, not nesting, and PAR review showed it
+    # passing against the exact regression it was meant to forbid. Real
+    # containment and behavioural coverage now live in
+    # tests/test_picker_script.py; this only asserts the script is present.
     for page in (pages.transcribe_home_page([], "tok"),
                  pages.session_page(_saved_session(), [], "tok")):
-        script_start = page.index("<script>")
-        load_idx = page.index("addEventListener('load'", script_start)
-        tauri_idx = page.index("__TAURI__", script_start)
-        assert load_idx < tauri_idx
+        assert "__TAURI__" in page
+        assert "addEventListener('load'" in page
 
 
 def test_transcription_pages_keep_typed_inputs_for_browser_mode():

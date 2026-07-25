@@ -740,7 +740,8 @@ def _safe_url(url: str) -> str:
 # file input for the native dialog. These fields are different: they are
 # already plain text paths that the form posts as-is, so the picker only has
 # to write the chosen path into the input — no separate paths endpoint.
-# capabilities/remote-dialog.json already grants dialog:allow-open to these
+# capabilities/remote.json (identifier `remote-dialog`)
+# already grants dialog:allow-open to these
 # sidecar-served pages.
 
 
@@ -786,9 +787,16 @@ _PICKER_SCRIPT = """<script>
             pathEl.hidden = false;
           },
           function (err) {
-            // Never strand the user: restore the typed field as the fallback.
+            // Never strand the user, and never swallow the reason. Restore
+            // the typed field as a working fallback, say what went wrong,
+            // and leave the button usable so a transient dialog failure
+            // does not cost the picker until a reload.
             if (typed) typed.hidden = false;
-            btn.hidden = true;
+            pathEl.querySelector('.picked-name').textContent =
+              'Folder picker unavailable';
+            pathEl.querySelector('.picked-path').textContent =
+              'Could not open the folder picker: ' + err + '. Type the path instead.';
+            pathEl.hidden = false;
           }
         );
       });
