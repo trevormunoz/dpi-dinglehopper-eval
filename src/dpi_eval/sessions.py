@@ -374,6 +374,16 @@ def stage_for_grade(
     for stem, ocr_name in overrides.items():
         if not ocr_name:
             continue
+        # Containment first: `.exists()` and the suffix check below constrain
+        # what the file is named, never where it lives, so `../../secret.txt`
+        # and absolute paths satisfied both and were copied into the graded
+        # set (and thence into the report). stage_ocr already flattens every
+        # staged name to its basename, so a legitimate override is always a
+        # plain filename.
+        if Path(ocr_name).name != ocr_name:
+            raise SessionError(
+                f"Override for {stem} names {ocr_name}, which is not a plain "
+                "filename from the staged OCR upload.")
         if not (ocr_src / ocr_name).exists():
             raise SessionError(
                 f"Override for {stem} names {ocr_name}, which is not in the "

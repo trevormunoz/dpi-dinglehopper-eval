@@ -93,6 +93,44 @@ def test_stage_for_grade_rejects_dangling_override(iiif_session):
         stage_for_grade(root, sid, {"p0000-page-0": "no-such-file.xml"})
 
 
+def test_stage_for_grade_rejects_traversing_override(iiif_session, tmp_path):
+    """PAR C1. `.exists()` + a suffix check constrain WHAT a file is named,
+    never WHERE it lives, so `../../../secret.txt` satisfied both and its
+    contents were copied into the graded set and rendered into the report."""
+    root, sid = iiif_session
+    save_page(root, sid, 0, "text\n", elapsed=1, active=1, nonce="a")
+    stage_ocr(root, sid, [("page_0.txt", b"x")])
+    secret = root.parent / "secret.txt"
+    secret.write_text("TOP SECRET", encoding="utf-8")
+    # staging/ocr is three levels below the session root
+    escape = "../../../../secret.txt"
+    assert (root / sid / "staging" / "ocr" / escape).exists(), "fixture must escape"
+    with pytest.raises(SessionError):
+        stage_for_grade(root, sid, {"p0000-page-0": escape})
+
+
+def test_stage_for_grade_rejects_absolute_override(iiif_session, tmp_path):
+    """PAR C1. pathlib join with an absolute right-hand side discards the
+    left, so no `..` is needed to leave the staging directory."""
+    root, sid = iiif_session
+    save_page(root, sid, 0, "text\n", elapsed=1, active=1, nonce="a")
+    stage_ocr(root, sid, [("page_0.txt", b"x")])
+    secret = tmp_path / "absolute-secret.txt"
+    secret.write_text("TOP SECRET", encoding="utf-8")
+    with pytest.raises(SessionError):
+        stage_for_grade(root, sid, {"p0000-page-0": str(secret)})
+
+
+def test_stage_for_grade_rejects_override_pointing_at_ground_truth(iiif_session):
+    """PAR C1. Staging the GT as its own OCR manufactures a 0% error rate
+    from a form field — a research-integrity failure, not just a file read."""
+    root, sid = iiif_session
+    save_page(root, sid, 0, "text\n", elapsed=1, active=1, nonce="a")
+    stage_ocr(root, sid, [("page_0.txt", b"x")])
+    with pytest.raises(SessionError):
+        stage_for_grade(root, sid, {"p0000-page-0": "../../gt/p0000-page-0.gt.txt"})
+
+
 def test_export_flattens_hostile_collection_label(tmp_path):
     root = transcriptions_root(tmp_path)
     records = [CanvasRecord(
