@@ -28,17 +28,33 @@ def sniff_format(path: Path) -> str:
     return "passthrough"
 
 
+def _has_class(name: str) -> str:
+    return f'contains(concat(" ", normalize-space(@class), " "), " {name} ")'
+
+
+# hOCR spec: ocr_line is the typographic line; ocrx_line is the engine-level
+# line emitted by kraken, OCRopus and several ABBYY converters. Matching only
+# ocr_line sent those engines down the fallback below, and silently dropped
+# every ocrx_line in a mixed document (counting them as OCR deletions).
+_LINE_CLASSES = ("ocr_line", "ocrx_line")
+
+
 def hocr_to_text(path: Path) -> str:
     tree = lxml_html.parse(str(path))
     lines = []
-    for el in tree.xpath(
-        '//*[contains(concat(" ", normalize-space(@class), " "), " ocr_line ")]'
-    ):
+    predicate = " or ".join(_has_class(name) for name in _LINE_CLASSES)
+    for el in tree.xpath(f"//*[{predicate}]"):
         text = " ".join(el.text_content().split())
         if text:
             lines.append(text)
-    if not lines:  # hOCR without ocr_line markup: fall back to page text
-        text = " ".join(tree.getroot().text_content().split())
+    if not lines:
+        # hOCR without any line markup. This used to take
+        # getroot().text_content(), which swept in <title> and <style> — page
+        # furniture graded as though it were a transcription. Body text only,
+        # with script/style excluded.
+        parts = tree.xpath(
+            "//body//text()[not(ancestor::script) and not(ancestor::style)]")
+        text = " ".join(" ".join(parts).split())
         if text:
             lines.append(text)
     return "\n".join(lines) + "\n" if lines else ""
