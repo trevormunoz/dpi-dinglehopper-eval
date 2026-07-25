@@ -1,7 +1,12 @@
 # Manual smoke test — transcription editor
 
 **Date:** 2026-07-25
-**Branch / HEAD:** `feat/dpi-eval-desktop` @ `eaaa5c4`
+**Branch:** `feat/dpi-eval-desktop`. **HEAD at start:** `eaaa5c4`.
+**Code actually exercised:** items 1–7 ran against the F1 fix, later
+committed as `df35043` — i.e. working-tree code that no listed commit
+contained at the time. Corrected after PAR review (E3); the original
+header cited `eaaa5c4` alone, from which these results cannot be
+reproduced.
 **Tester:** Trevor Muñoz
 **Scope:** the manual QA left open by task 12 of 12 (see
 `.git/sdd/task-12-report.md`). The automated suite (197 tests) was already
@@ -79,12 +84,12 @@ Legend: PASS / FAIL / BLOCKED / not yet run.
 | # | Check | Result | Notes |
 |---|---|---|---|
 | 1 | Local-folder session from a folder with a JP2 master; from-scratch; collection label | **PASS** (after F1 fix) | First attempt FAILED — a valid folder was rejected (F1, F3). After the picker was added, the native dialog supplied `source.path` cleanly and the session was created. |
-| 2 | Page selection prunes the queue (untick ≥1 page) | **PASS** | Unticked `page_0004`; `session.json` holds only `page_0001`–`page_0003`. The page is absent from the record entirely, not merely deselected — pruning happens at create, as specified. Editor header confirms "Page 1 of 3". |
+| 2 | Page selection prunes the queue (untick ≥1 page) | **PASS** | Unticked `page_0004`; `session.json` holds only `page_0001`–`page_0003`. The page is absent from the record entirely, not merely deselected. (Correction, PAR E4: pruning happens at **confirm**, not create — `create_local_session` records all four images (`sessions.py:148`) and `confirm_session` filters them (`sessions.py:190`). Outcome as stated; mechanism was wrong.) Editor header confirms "Page 1 of 3". |
 | 3 | Typing: straight quotes NOT replaced by smart quotes in WKWebView | **PASS** | Typed `test "straight quotes" and don't`; quotes stayed vertical and the apostrophe straight. The textarea's `spellcheck`/`autocorrect`/`autocapitalize`/`autocomplete="off"` attributes hold in WKWebView, which the unit tests cannot establish. Probe line deleted before saving so the GT stayed clean for item 6. |
 | 4 | JP2 master renders as derived JPEG; Enlarge lightbox opens full-res | **PASS** | JP2 master renders legibly in the editor via the local derive endpoint — no browser decodes JP2 natively, so this exercises Pillow/OpenJPEG inside the bundled runtime. Enlarge opens the `<dialog>` showing the master at genuine full resolution; Escape closes it. Usability friction logged as F6. |
 | 5 | Mark a different page No text → illegible; save; status table shows Time (elapsed) **and** Time (active) | **PASS** | `page_0003` → `status: no_text`, `no_text_reason: 'illegible'`. Session page shows both timing columns populated: `page_0001` 203s/38s, `page_0002` 71s/36s, `page_0003` 0s/0s. Collection label `qa-smoke-2026-07-25` displayed. GT verified at byte level — em dash in `page_0002` survived NFC normalization intact. |
-| 6 | Grade: alignment preview, one unmatched file fixed by override, confirm, results page opens | **PASS** | Preview auto-matched `page_0001`→`page_0001.txt`, offered a dropdown for `page_0002`, listed `page_0002_ocr.txt` as unmatched, and correctly omitted the `no_text` page entirely (`pages.py:922` skips non-saved pages before pairing). Override applied, `Grade` ran the real engine → `run-022`, `exit_code: 0`, `failed: []`, both pages graded, no failure section. |
-| 7 | Export zip: `gt/` holds only saved pages; `transcriptions.json` covers every selected page with status, reason, arm, timings | **PASS** | Download reached `~/Downloads/dpi-eval-gt-s-20260725-163203-ca8b.zip` — **no fourth chrome failure**. Bundle rooted at `qa-smoke-2026-07-25/<sid>/`. `gt/` holds only the 2 saved pages (`page_0003` absent). `transcriptions.json` covers all 3 selected pages with `status`, `no_text_reason: "illegible"`, `arm` (per-page and top-level), and both timing fields. `page_0004` absent throughout, so create-time pruning holds all the way to export. Em dash preserved. |
+| 6 | Grade: alignment preview, one unmatched file fixed by override, confirm, results page opens | **PASS** | Preview auto-matched `page_0001`→`page_0001.txt`, offered a dropdown for `page_0002`, listed `page_0002_ocr.txt` as unmatched, and correctly omitted the `no_text` page entirely. (Correction, PAR E5: pairing runs **first**, in `stage_ocr` → `align(session["pages"], …)` (`sessions.py:351`) over *all* pages including `no_text`; the saved-only filter lives in `alignment_page`, the renderer, and runs after. The outcome was right, the stated cause was not — and the same wrong explanation was given verbally during the run.). Override applied, `Grade` ran the real engine → `run-022`, `exit_code: 0`, `failed: []`, both pages graded, no failure section. |
+| 7 | Export zip: `gt/` holds only saved pages; `transcriptions.json` covers every selected page with status, reason, arm, timings | **PASS** | Download reached `~/Downloads/dpi-eval-gt-s-20260725-163203-ca8b.zip` — **no fourth chrome failure**. Bundle rooted at `qa-smoke-2026-07-25/<sid>/`. `gt/` holds only the 2 saved pages (`page_0003` absent). `transcriptions.json` covers all 3 selected pages with `status`, `no_text_reason: "illegible"`, `arm` (per-page and top-level), and both timing fields. `page_0004` absent throughout, so the confirm-time prune holds all the way to export. Em dash preserved. |
 
 Testing was halted at item 1 by decision of the tester — the missing native
 folder picker (F1) was a blocker, not a note-and-continue — then resumed
@@ -136,15 +141,22 @@ run exercised all three areas and they held:
 - **Native folder dialog works.** Driven from a loopback-served page via the
   `remote-dialog` capability, working on first wiring — the hard case for a
   webview.
-- **Injection timing holds.** The new picker script probes `__TAURI__` only
-  inside a `load` listener, guarded by a test.
+- **Injection timing.** The new picker script probes `__TAURI__` only inside
+  a `load` listener. *Correction (PAR E6/S1): this was originally written as
+  "holds … guarded by a test". The guard compared textual offsets and passed
+  against the very regression it forbade, so no runtime property had been
+  established. Real containment and behavioural coverage were added
+  afterwards in `tests/test_picker_script.py`, which execute the script and
+  record when `__TAURI__` is first read.*
 - **Token injection works** — no 403 anywhere in the run.
 - Also confirmed: JP2→JPEG derive, `<dialog>`/`showModal()` + Escape, and
   every form POST.
 
 Note too that the design has already absorbed the earlier lessons: the
-`ocr_folder` path field exists so OCR bytes never cross the webview
-boundary, and `remote-dialog` was written in advance for precisely the
+`ocr_folder` path field *permits* avoiding the webview boundary for OCR
+bytes (corrected, PAR E7: "never" was wrong — the same form also ships
+`<input type="file" name="ocr_files" multiple>` and `web.py:526–530`
+reads whichever arrives), and `remote-dialog` was written in advance for precisely the
 picker this run wired up.
 
 One caveat: **F3 remains unexplained.** If its cause is WKWebView mangling
@@ -244,12 +256,20 @@ F3 is an unexplained input-handling defect that a picker would hide.
 Triggered accidentally during this session while restarting the app, but the
 sequence is reachable without a developer present, so it is recorded.
 
-What happened: a `dpi-eval-web` sidecar from a previous launch was still
-running, with its interpreter at `…/edu.umd.dpi-eval/venv/bin/python3`. The
-wheelhouse hash had changed, so `ensure_venv` took its rebuild branch and
-ran `remove_dir_all(&venv)` (`lifecycle.rs:380`) — deleting the tree the
-live process was executing from. The subsequent `python3 -m venv` was killed
-by the OS:
+**Corrected after PAR review (E1). The mechanism first written here was
+wrong, and was asserted rather than established.** The original text claimed
+`remove_dir_all(&venv)` deleted the tree the running interpreter was
+executing from, and that this caused the SIGKILL. It cannot have:
+`ensure_venv` creates the venv with `bundled_python(resource_dir)`
+(`lifecycle.rs:385`), which resolves inside the app bundle
+(`lifecycle.rs:320–328`) and is untouched by that delete. F3 was correctly
+marked "unexplained"; this deserved the same treatment and did not get it.
+
+What is actually observed: a `dpi-eval-web` sidecar from a previous launch
+was still running out of `…/edu.umd.dpi-eval/venv/bin/python3`. The
+wheelhouse hash had changed, so `ensure_venv` took its rebuild branch and ran
+`remove_dir_all(&venv)` (`lifecycle.rs:381`). The subsequent
+`python3 -m venv` was then killed by the OS:
 
     [dpi-eval-desktop] (re)building venv at …/edu.umd.dpi-eval/venv
     [dpi-eval-desktop] startup failed: create venv failed (signal: 9 (SIGKILL))
@@ -267,18 +287,28 @@ failure class `desktop/PROBE-CHECKLIST.md` exists to catch. Candidate
 mitigations (not implemented): refuse to delete a venv that has a live
 process, or reap a stale sidecar before rebuilding.
 
-**Reproduced at the end of the session, which raises confidence in it.** On
-shutting the app down, the sidecar was left running again
-(`…/venv/bin/dpi-eval-web --no-browser`, still alive after the app process
-was gone) and had to be killed by PID. So the orphan is not a one-off from
-the mid-session restart: whenever the app dies without a graceful quit — a
-crash, a force-quit, an OS kill — the sidecar survives it. Combine that with
-a payload update on next launch (an app upgrade being the obvious real-world
-trigger) and F4 fires.
+**Reproduced at the end of the session.** On shutting the app down, the
+sidecar was left running again (`…/venv/bin/dpi-eval-web --no-browser`, still
+alive after the app process was gone) and had to be killed by PID.
 
-The two halves are each harmless and jointly a dead end for a user with no
-terminal: nothing reaps the sidecar, and `ensure_venv` deletes the venv
-without checking whether anything is running out of it.
+**The orphan half now has a verified mechanism — PAR S7, and it is worse than
+what was written here.** The original conclusion was that the orphan happens
+"whenever the app dies *without* a graceful quit". That understated it
+(PAR E2): the graceful path is fully instrumented — `main.rs:155–159` calls
+`shutdown()` on both `ExitRequested` and `Exit`, and `lifecycle.rs:595–621`
+does `killpg(SIGTERM)` then `SIGKILL`. The reason it fails anyway is that
+`lifecycle.rs:649` blocks `SIGTERM`/`SIGINT` with `pthread_sigmask`, and
+`pre_exec` (`lifecycle.rs:525–530`) calls only `setsid()` — it never restores
+the mask. Signal masks survive `execve`, so the sidecar inherits both signals
+blocked, `killpg(SIGTERM)` is ignored, the `TERM_GRACE` loop always expires,
+and every quit ends in `SIGKILL` with uvicorn's graceful shutdown never
+running. The orphan is therefore reachable on the *instrumented* path, not
+only through crashes.
+
+What remains genuinely unexplained is the **SIGKILL of the freshly spawned
+`python3 -m venv`**, since that interpreter lives in the app bundle. A
+plausible neighbouring class is the signing/quarantine behaviour catalogued
+in `desktop/PROBE-CHECKLIST.md`, but that is a hypothesis, not a finding.
 
 Not a WKWebView chrome failure.
 
@@ -441,6 +471,34 @@ still needs to establish.
 
 Other bugs here are recorded, not fixed.
 
+## Corrections applied after PAR review
+
+This record was adversarially reviewed (see
+`docs/qa/2026-07-25-par-review-pr1.md`). Ten errors were found in it and in
+the session's other output. Corrections are inline above rather than silently
+amended; in summary:
+
+- **E1/E2** — F4's causal chain was asserted, not established, and its
+  conclusion understated the defect. Both corrected; the verified mechanism
+  is PAR S7.
+- **E3** — the stated HEAD predated the code the results came from.
+- **E4** — pruning happens at confirm, not create.
+- **E5** — the `no_text` page is skipped at render, not before pairing.
+- **E6** — "injection timing holds, guarded by a test" was unsupported; the
+  guard passed against the regression it forbade.
+- **E7** — "OCR bytes never cross the webview boundary" overstated.
+- **E8** — `capabilities/remote-dialog.json` does not exist; the file is
+  `remote.json`. Fixed in code, tests, and this record.
+- **E9** — F2 and F5 cite screenshots that live only in the QA conversation,
+  not in the repository, so neither finding is reproducible from what is
+  committed here. F5's substance is additionally unverified against source:
+  the controls it describes as overlapping are ordinary sibling block
+  `<form>` elements in normal flow (`pages.py:926–945`) and `_STYLE` has no
+  absolute/fixed positioning, negative margins, or floats. Treat F5 as
+  "evidence unavailable", not as an established defect.
+- **E10** — several line citations were taken from the post-fix working tree
+  while this document declared `eaaa5c4`; `lifecycle.rs:380` should be `:381`.
+
 ## Summary
 
 **Desktop items 1–7: all PASS.** Item 1 failed on first attempt and was
@@ -484,7 +542,10 @@ identical but for one `# via` comment.
 
 ## Notes on expected (non-bug) behaviour
 
-- IIIF manifests whose canvases lack images are **rejected by design**,
+- IIIF manifests whose canvases lack images are **rejected by design** —
+  though PAR review (S9) found a hole: a Presentation v3 `Choice` body is
+  unhandled, so `image_url` becomes `""` while the canvas still counts,
+  and the guard passes. The intent below stands; the guard is incomplete —
   protecting the 0-based alignment that `iiif_ocr`'s `page_{i}` naming
   depends on. A rejection is correct behaviour, not a defect.
 - Unmatched pages in the alignment preview are **not graded**; they count
