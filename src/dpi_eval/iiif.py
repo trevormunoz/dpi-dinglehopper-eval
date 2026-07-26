@@ -6,9 +6,12 @@ wheelhouse, and it is v2-only where we need v3 too).
 """
 
 import json
+import os
 import re
 import unicodedata
+import urllib.error
 import urllib.request
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from dataclasses import dataclass
 
 
@@ -57,11 +60,40 @@ class _NoInsecureRedirectHandler(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_NoInsecureRedirectHandler)
 
 
+try:
+    # The distribution name, not the import package (`dpi_eval`) — they differ.
+    _VERSION = _pkg_version("dpi-dinglehopper-eval")
+except PackageNotFoundError:  # running from a source tree, not installed
+    _VERSION = "0+unknown"
+
+DEFAULT_USER_AGENT = f"dpi-eval/{_VERSION} (+OCR evaluation harness)"
+
+
+def _user_agent() -> str:
+    """The User-Agent to send with a manifest fetch.
+
+    Defaults to identifying ourselves honestly. It is overridable because
+    institutional IIIF servers sit behind a WAF that filters on this header,
+    and UMD's answers 400 to `Python-urllib/3.11` *and* to an honest
+    `dpi-eval/…` — only a browser-shaped string gets through. Mimicking a
+    browser by default would make our traffic indistinguishable from a
+    student's in the logs that would want to tell them apart, so the honest
+    value stays the default and the operator opts into the workaround.
+
+    A blank override falls back rather than sending an empty header: no
+    User-Agent at all draws a 403 from the same WAF.
+    """
+    configured = (os.environ.get("DPI_EVAL_USER_AGENT") or "").strip()
+    return configured or DEFAULT_USER_AGENT
+
+
 def fetch_manifest(url: str, timeout: float = 30.0) -> dict:
     if not url.startswith("https://"):
         raise IIIFError("Manifest URL must be https:// — got: " + url)
+    request = urllib.request.Request(
+        url, headers={"User-Agent": _user_agent(), "Accept": "application/json"})
     try:
-        with _opener.open(url, timeout=timeout) as resp:
+        with _opener.open(request, timeout=timeout) as resp:
             # Belt-and-braces: _NoInsecureRedirectHandler already refuses to
             # follow an insecure redirect before it is issued. Re-check the
             # final URL too, in case some other handler path we haven't
@@ -80,6 +112,20 @@ def fetch_manifest(url: str, timeout: float = 30.0) -> dict:
             return json.loads(body.decode("utf-8"))
     except IIIFError:
         raise
+    except urllib.error.HTTPError as exc:
+        # A WAF rejects on the header, never having looked at the path, so a
+        # bare "400 Bad Request" sends the user hunting for a typo in a URL
+        # that is fine. Name the override on the codes a filter actually uses.
+        hint = ""
+        if exc.code in (400, 401, 403, 406, 429):
+            hint = (
+                f" The server may be filtering on User-Agent (we sent "
+                f"{_user_agent()!r}). If this manifest opens in a browser, set "
+                "DPI_EVAL_USER_AGENT to a value the server accepts and try "
+                "again.")
+        raise IIIFError(
+            f"Could not fetch manifest {url}: HTTP {exc.code} "
+            f"{exc.reason}.{hint}") from exc
     except Exception as exc:  # noqa: BLE001 — every failure is a create-time error
         raise IIIFError(f"Could not fetch manifest {url}: {exc}") from exc
 

@@ -217,13 +217,90 @@ def test_fetch_manifest_happy_path_parses_json(monkeypatch):
         def geturl(self):
             return "https://iiif.example.edu/m/1"
 
-    def fake_open(url, data=None, timeout=None):
-        assert url == "https://iiif.example.edu/m/1"
+    def fake_open(req, data=None, timeout=None):
+        # fetch_manifest wraps the URL in a Request so it can carry headers.
+        assert req.full_url == "https://iiif.example.edu/m/1"
         return FakeResponse(b'{"@context": "x", "sequences": []}')
 
     monkeypatch.setattr(iiif_module._opener, "open", fake_open)
     doc = fetch_manifest("https://iiif.example.edu/m/1")
     assert doc == {"@context": "x", "sequences": []}
+
+
+def _capturing_opener(monkeypatch, body=b'{"@context": "x", "sequences": []}'):
+    """Patch _opener.open and hand back the list it records requests into."""
+    import io
+
+    from dpi_eval import iiif as iiif_module
+
+    seen = []
+
+    class FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+        def geturl(self):
+            return "https://iiif.example.edu/m/1"
+
+    def fake_open(req, data=None, timeout=None):
+        seen.append(req)
+        return FakeResponse(body)
+
+    monkeypatch.setattr(iiif_module._opener, "open", fake_open)
+    return seen
+
+
+def test_fetch_manifest_sends_an_identifying_user_agent(monkeypatch):
+    """Default is honest: the fetch says what it is. urllib's own
+    'Python-urllib/3.x' says nothing about who is asking."""
+    monkeypatch.delenv("DPI_EVAL_USER_AGENT", raising=False)
+    seen = _capturing_opener(monkeypatch)
+    fetch_manifest("https://iiif.example.edu/m/1")
+    sent = seen[0].get_header("User-agent")
+    assert sent and sent.startswith("dpi-eval/")
+    assert "Python-urllib" not in sent
+
+
+def test_fetch_manifest_user_agent_is_configurable(monkeypatch):
+    """UMD (and other institutions) front their IIIF servers with a WAF that
+    400s an unrecognised User-Agent, including an honest one. Operators need to
+    be able to set what gets sent without editing source."""
+    monkeypatch.setenv("DPI_EVAL_USER_AGENT", "Mozilla/5.0 (Macintosh)")
+    seen = _capturing_opener(monkeypatch)
+    fetch_manifest("https://iiif.example.edu/m/1")
+    assert seen[0].get_header("User-agent") == "Mozilla/5.0 (Macintosh)"
+
+
+def test_fetch_manifest_blank_user_agent_falls_back_to_the_default(monkeypatch):
+    """An empty env var must not send an empty header — UMD's WAF answers 403
+    to a request with no User-Agent at all."""
+    monkeypatch.setenv("DPI_EVAL_USER_AGENT", "   ")
+    seen = _capturing_opener(monkeypatch)
+    fetch_manifest("https://iiif.example.edu/m/1")
+    assert seen[0].get_header("User-agent").startswith("dpi-eval/")
+
+
+def test_fetch_manifest_explains_a_probable_waf_rejection(monkeypatch):
+    """A bare '400 Bad Request' sends the user hunting for a broken URL, when
+    the real cause is a filter that never looked at the URL. The error has to
+    name the override, or nobody can act on it."""
+    import urllib.error
+
+    from dpi_eval import iiif as iiif_module
+
+    def fake_open(req, data=None, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 400, "Bad Request", {}, None)
+
+    monkeypatch.setattr(iiif_module._opener, "open", fake_open)
+    with pytest.raises(IIIFError) as excinfo:
+        fetch_manifest("https://iiif.example.edu/m/1")
+    message = str(excinfo.value)
+    assert "DPI_EVAL_USER_AGENT" in message
+    assert "400" in message
 
 
 def test_fetch_manifest_rejects_final_url_that_redirected_to_http(monkeypatch):

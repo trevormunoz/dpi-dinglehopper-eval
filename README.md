@@ -119,6 +119,21 @@ transcription queue is exactly the set of pages you tick. There's no
 separate "which pages count" step later: what you select at create is
 what you'll be asked to transcribe.
 
+**If a manifest URL opens in your browser but the app reports `HTTP 400` or
+`403`:** the repository is probably behind a web application firewall that
+filters on `User-Agent`. dpi-eval identifies itself honestly as
+`dpi-eval/<version>`, and some WAFs reject anything they don't recognise —
+including that. Override it:
+
+```bash
+export DPI_EVAL_USER_AGENT='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
+```
+
+UMD's own `iiif.lib.umd.edu` needs this. The better long-term fix is to ask
+whoever runs the WAF to allow a named agent, which keeps our traffic
+distinguishable from a browser's in the logs; the override exists so you are
+not blocked while that conversation happens.
+
 ### Typing a page
 
 Type what the page actually says, one printed line at a time. **Press
