@@ -83,6 +83,112 @@ def test_parse_rejects_manifest_with_empty_image_url_in_v3_body():
         parse_manifest(doc)
 
 
+_NON_STRING_IDS = [{"evil": 1}, ["https://x/a.jpg"], 7, True]
+
+
+@pytest.mark.parametrize("bad_id", _NON_STRING_IDS)
+def test_parse_rejects_v3_body_with_non_string_id(bad_id):
+    # A non-string id is truthy, so `if not image_url` never fires: without a
+    # type check the record reaches session.json and the editor's _safe_url
+    # calls .startswith() on it, leaving the session permanently un-openable.
+    doc = _load("manifest_v3.json")
+    doc["items"][0]["items"][0]["items"][0]["body"]["id"] = bad_id
+    with pytest.raises(IIIFError, match="must be a string"):
+        parse_manifest(doc)
+
+
+@pytest.mark.parametrize("bad_id", _NON_STRING_IDS)
+def test_parse_rejects_v2_resource_with_non_string_id(bad_id):
+    doc = _load("manifest_v2.json")
+    doc["sequences"][0]["canvases"][0]["images"][0]["resource"]["@id"] = bad_id
+    with pytest.raises(IIIFError, match="must be a string"):
+        parse_manifest(doc)
+
+
+def test_parse_rejects_v3_service_with_non_string_id():
+    # image_service is string-formatted into an Image API URL by the editor,
+    # so a non-string here is the same permanently-broken page as a bad body
+    # id.
+    doc = _load("manifest_v3.json")
+    body = doc["items"][0]["items"][0]["items"][0]["body"]
+    body["service"] = [{"id": {"evil": 1}, "type": "ImageService3"}]
+    with pytest.raises(IIIFError, match="must be a string"):
+        parse_manifest(doc)
+
+
+def test_parse_rejects_v2_service_with_non_string_id():
+    doc = _load("manifest_v2.json")
+    resource = doc["sequences"][0]["canvases"][0]["images"][0]["resource"]
+    resource["service"] = {"@id": ["https://iiif.example.edu/i/0"]}
+    with pytest.raises(IIIFError, match="must be a string"):
+        parse_manifest(doc)
+
+
+def test_parse_rejects_v3_canvas_with_non_string_id():
+    # canvas_id is carried into session.json and the export rows; a dict there
+    # would be repr'd into the evidence a purchasing decision is read off.
+    doc = _load("manifest_v3.json")
+    doc["items"][1]["id"] = {"evil": 1}
+    with pytest.raises(IIIFError, match="must be a string"):
+        parse_manifest(doc)
+
+
+def test_parse_rejects_v2_canvas_with_non_string_id():
+    doc = _load("manifest_v2.json")
+    doc["sequences"][0]["canvases"][1]["@id"] = {"evil": 1}
+    with pytest.raises(IIIFError, match="must be a string"):
+        parse_manifest(doc)
+
+
+@pytest.mark.parametrize("bad_type", [None, "Range", "canvas", 3, {"a": 1}])
+def test_parse_rejects_v3_item_that_is_not_a_canvas(bad_type):
+    # The skip used to run before canvas_count += 1, so the bad item vanished
+    # from BOTH sides of the index-skew guard: three canvases with the middle
+    # one malformed parsed as two records, and canvas 2's image landed at
+    # index 1. Page 1's transcription would then be graded against canvas 2's
+    # page_1 OCR with nothing in the output saying so.
+    doc = _load("manifest_v3.json")
+    middle = json.loads(json.dumps(doc["items"][0]))
+    middle["id"] = "https://iiif.example.edu/c3/mid"
+    middle["items"][0]["items"][0]["body"]["id"] = "https://x/i/mid.jpg"
+    middle["items"][0]["items"][0]["body"].pop("service", None)
+    if bad_type is None:
+        middle.pop("type")
+    else:
+        middle["type"] = bad_type
+    doc["items"].insert(1, middle)
+    with pytest.raises(IIIFError, match="Canvas"):
+        parse_manifest(doc)
+
+
+def test_parse_v3_non_canvas_item_never_shifts_surviving_indices():
+    # Belt-and-braces on the above: whatever the disposition of a non-Canvas
+    # item, it must never be possible for a record to end up at an index that
+    # is not its own position in `items`.
+    doc = _load("manifest_v3.json")
+    doc["items"].insert(1, {"id": "https://iiif.example.edu/r/0",
+                            "type": "Range"})
+    try:
+        records = parse_manifest(doc)
+    except IIIFError:
+        return
+    assert [r.canvas_id for r in records] == [
+        "https://iiif.example.edu/c3/0", "https://iiif.example.edu/r/0",
+        "https://iiif.example.edu/c3/1"], (
+        "a skipped item shifted every later canvas index")
+
+
+@pytest.mark.parametrize(
+    "doc", [[], ["sequences"], "sequences", 7, None])
+def test_parse_rejects_manifest_that_is_not_an_object(doc):
+    # Same class as the scalar ids: json.loads happily returns a list, a str
+    # or a number, and both callers catch only IIIFError — so an
+    # AttributeError from doc.get() (or, for a str, a substring "sequences"
+    # match) escapes as a 500 instead of a readable create-time error.
+    with pytest.raises(IIIFError):
+        parse_manifest(doc)
+
+
 def test_parse_rejects_manifest_with_malformed_v3_items():
     with pytest.raises(IIIFError):
         parse_manifest({"@context": "x", "items": {"a": 1}})

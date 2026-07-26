@@ -92,11 +92,40 @@ def _v3_label(label) -> str:
     return str(label or "")
 
 
+def _require_str_id(value, what: str) -> str:
+    """Type-check one scalar id pulled out of a manifest; "" if absent.
+
+    The isinstance guards below prove the shape of the *containers*; they say
+    nothing about the scalars read out of them, and every id here is treated
+    as a URL string downstream — image_url/image_service get formatted into
+    Image API URLs and .startswith()-checked by the editor, canvas_id lands in
+    session.json and the export rows. A non-string id is truthy, so an
+    emptiness check waves it through and the page it creates can never be
+    opened.
+
+    Raising rather than coercing to "" is deliberate: an id of the wrong type
+    is a malformed manifest, like every other shape violation in this module,
+    not a canvas that honestly has no image. Both dispositions reject the
+    manifest (a coerced "" would trip the canvas-count guard), but only this
+    one names the real fault instead of blaming a missing image.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise IIIFError(
+            f"Manifest {what} must be a string — this manifest is malformed "
+            "and cannot be used.")
+    return value
+
+
 def _service_id(service) -> str | None:
     if isinstance(service, list):
         service = service[0] if service else None
     if isinstance(service, dict):
-        return service.get("@id") or service.get("id")
+        service_id = (
+            _require_str_id(service.get("@id"), "image service '@id'")
+            or _require_str_id(service.get("id"), "image service 'id'"))
+        return service_id or None
     return None
 
 
@@ -119,6 +148,13 @@ def _resolve_v3_body(body_candidate):
 
 
 def parse_manifest(doc: dict) -> list[CanvasRecord]:
+    # json.loads returns whatever the host sent — a top-level array, string
+    # or number reaches here, and both callers catch IIIFError only, so
+    # anything else escapes as a 500 rather than a create-time error.
+    if not isinstance(doc, dict):
+        raise IIIFError(
+            "Manifest is not a JSON object — this manifest is malformed and "
+            "cannot be used.")
     records: list[CanvasRecord] = []
     canvas_count = 0
     if "sequences" in doc:  # Presentation v2
@@ -142,6 +178,8 @@ def parse_manifest(doc: dict) -> list[CanvasRecord]:
                     raise IIIFError(
                         "Manifest has a non-object entry in 'canvases' — "
                         "this manifest is malformed and cannot be used.")
+                # Counted first, unconditionally — see the v3 branch below
+                # for why nothing may return before this increment.
                 canvas_count += 1
                 images = canvas.get("images", [])
                 if not isinstance(images, list):
@@ -161,11 +199,13 @@ def parse_manifest(doc: dict) -> list[CanvasRecord]:
                     raise IIIFError(
                         "Image 'resource' must be an object — this "
                         "manifest is malformed and cannot be used.")
-                image_url = resource.get("@id", "")
+                image_url = _require_str_id(
+                    resource.get("@id"), "image resource '@id'")
                 if not image_url:
                     continue
                 records.append(CanvasRecord(
-                    canvas_id=canvas.get("@id", ""),
+                    canvas_id=_require_str_id(
+                        canvas.get("@id"), "canvas '@id'"),
                     label=str(canvas.get("label") or ""),
                     image_url=image_url,
                     image_service=_service_id(resource.get("service")),
@@ -181,9 +221,18 @@ def parse_manifest(doc: dict) -> list[CanvasRecord]:
                 raise IIIFError(
                     "Manifest has a non-object entry in 'items' — this "
                     "manifest is malformed and cannot be used.")
-            if canvas.get("type") != "Canvas":
-                continue
+            # Counted first, unconditionally: this increment is the left-hand
+            # side of the index-skew guard at the end of this function, so any
+            # path that returns before it drops the item from *both* sides of
+            # that comparison and the guard goes blind. Anything that would
+            # shift a canvas index has to raise, never `continue`.
             canvas_count += 1
+            if canvas.get("type") != "Canvas":
+                raise IIIFError(
+                    "Manifest 'items' has an entry whose type is not "
+                    "'Canvas' — skipping it would shift every later page "
+                    "index against page_{i}-style OCR, so this manifest "
+                    "cannot be used as-is.")
             body = None
             canvas_items = canvas.get("items", [])
             if not isinstance(canvas_items, list):
@@ -212,11 +261,12 @@ def parse_manifest(doc: dict) -> list[CanvasRecord]:
                         break
                 if body:
                     break
-            image_url = body.get("id", "") if body else ""
+            image_url = _require_str_id(
+                body.get("id"), "image body 'id'") if body else ""
             if not image_url:
                 continue
             records.append(CanvasRecord(
-                canvas_id=canvas.get("id", ""),
+                canvas_id=_require_str_id(canvas.get("id"), "canvas 'id'"),
                 label=_v3_label(canvas.get("label")),
                 image_url=image_url,
                 image_service=_service_id(body.get("service")),
