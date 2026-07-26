@@ -66,11 +66,44 @@ LOCK_TIMEOUT = 10.0
 LOCK_STALE_AFTER = 60.0
 _LOCK_POLL = 0.01
 _held_locks = threading.local()
+# Minted once per process, and deliberately not just the pid: a pid is
+# reused across runs, so a lock file left by a crashed earlier run whose
+# pid this run happens to have inherited must still look foreign.
+_PROCESS_TOKEN = f"{os.getpid()}-{secrets.token_hex(4)}"
+
+
+def _lock_is_ours(path: Path) -> bool:
+    """Was this lock file written by *this* process? An unreadable or
+    unrecognized file counts as foreign: a pre-fix file holds a bare pid,
+    and a file created but never written has no owner at all."""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").startswith(
+            _PROCESS_TOKEN + " ")
+    except OSError:
+        return False
+
+
+def _release_lock(path: Path, nonce: str) -> bool:
+    """Unlink the lock file only while we still own it, and report whether
+    we did. A waiter that judged the lock stale may have broken in; the
+    file is then the breaker's, and unlinking it would admit a third
+    caller in the middle of the breaker's write."""
+    try:
+        held = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    if held != nonce:
+        return False
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    return True
 
 
 @contextmanager
 def session_lock(root: Path, session_id: str):
-    """Serialize one session's read-modify-write of session.json.
+    """Serialize one session's read-modify-write of session.json and staging/.
 
     `save_session` is atomic (os.replace), which prevents a torn file but
     not a lost update: every mutator loads the whole record, edits it and
@@ -90,6 +123,16 @@ def session_lock(root: Path, session_id: str):
     Re-entrant per thread, so a mutator that calls another locked helper
     cannot self-deadlock. Only ever one lock path per session, so no
     lock-ordering cycle between sessions is possible.
+
+    The lock file records the acquiring process's token plus a per-acquire
+    nonce, and only a *foreign* lock is ever broken as stale. Breaking a
+    live holder's lock cannot work: nothing can tell that holder it lost
+    the lock, so both would be inside the critical section — precisely the
+    lost update this lock exists to prevent — and the holder's exit would
+    then unlink the breaker's file. Threads in this process are the only
+    concurrency the routes produce, so they are never broken and contend
+    honestly instead; a foreign file is a previous run's leftover, and any
+    file this run leaks becomes foreign the moment the app is restarted.
     """
     directory = session_dir(root, session_id)
     key = str(directory)
@@ -106,6 +149,7 @@ def session_lock(root: Path, session_id: str):
 
     path = directory / "session.lock"
     directory.mkdir(parents=True, exist_ok=True)
+    nonce = f"{_PROCESS_TOKEN} {secrets.token_hex(8)}"
     deadline = time.monotonic() + LOCK_TIMEOUT
     while True:
         try:
@@ -113,17 +157,22 @@ def session_lock(root: Path, session_id: str):
             break
         except FileExistsError:
             # A crash can leave the file behind; a session that stays
-            # locked forever would be worse than the race.
-            try:
-                age = time.time() - path.stat().st_mtime
-            except FileNotFoundError:
-                continue
-            if age > LOCK_STALE_AFTER:
+            # locked forever would be worse than the race. Only foreign
+            # locks qualify (see the docstring) — st_mtime is wall clock
+            # while the deadline is monotonic, so a laptop sleep or an NTP
+            # step can inflate the age, and that must never be able to
+            # evict a holder that is still running here.
+            if not _lock_is_ours(path):
                 try:
-                    path.unlink()
-                except FileNotFoundError:
-                    pass
-                continue
+                    age = time.time() - path.stat().st_mtime
+                except OSError:
+                    continue
+                if age > LOCK_STALE_AFTER:
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    continue
             if time.monotonic() >= deadline:
                 raise SessionError(
                     "Another change to this session is still in progress. "
@@ -131,7 +180,15 @@ def session_lock(root: Path, session_id: str):
                     "the editor.")
             time.sleep(_LOCK_POLL)
     try:
-        os.write(fd, str(os.getpid()).encode("ascii"))
+        os.write(fd, nonce.encode("ascii"))
+    except OSError:
+        # Never leave a lock file with no recorded owner: nothing could
+        # release it, and only the stale break would ever clear it.
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
     finally:
         os.close(fd)
     depths[key] = 1
@@ -139,10 +196,15 @@ def session_lock(root: Path, session_id: str):
         yield
     finally:
         depths[key] = 0
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+        held = _release_lock(path, nonce)
+    if not held:
+        # Reached only on the clean path: if the body raised, that
+        # exception propagates from the finally above and wins, because
+        # the student's own error matters more than our bookkeeping.
+        raise SessionError(
+            "Something else changed this session at the same time, so this "
+            "change may not have been recorded. Reload the session page and "
+            "check the page you were working on.")
 
 
 def load_session(root: Path, session_id: str) -> dict:
@@ -439,45 +501,103 @@ def _staging(root: Path, session_id: str) -> Path:
 
 
 def clear_staging(root: Path, session_id: str) -> None:
-    shutil.rmtree(_staging(root, session_id), ignore_errors=True)
+    """Drop the staged OCR upload.
+
+    Locked with the staging writers (R2-S4) so a clear cannot land between
+    another request's write and its align(). A clear that cannot take the
+    lock is skipped rather than raised: this runs as cleanup after a grade
+    run has already finished, nobody is waiting on it, and the next
+    preview's stage_ocr clears staging under the lock before re-staging.
+    Where a stale directory would actually matter, _fresh_dir says so."""
+    try:
+        with session_lock(root, session_id):
+            shutil.rmtree(_staging(root, session_id), ignore_errors=True)
+    except SessionError:
+        pass
+
+
+def _fresh_dir(directory: Path) -> None:
+    """Replace a staging directory with an empty one, loudly.
+
+    `rmtree(ignore_errors=True)` swallows a failed removal, and the mkdir
+    that follows then raised a bare FileExistsError — an unhandled OSError
+    out of the route, i.e. a 500. `exist_ok=True` would be the wrong cure:
+    the previous upload's files would survive, and align() would report
+    OCR the student never picked."""
+    shutil.rmtree(directory, ignore_errors=True)
+    try:
+        directory.mkdir(parents=True)
+    except OSError as exc:
+        raise SessionError(
+            f"Could not clear the previous staging directory ({directory}): "
+            f"{exc}. Close anything using those files and try again.") from exc
 
 
 def stage_ocr(root: Path, session_id: str, files: list[tuple[str, bytes]]) -> dict:
-    session = _mutable(root, session_id)
-    # Names arrive relative to the picked folder, so `batch-a/page_0.txt`
-    # and `batch-b/page_0.txt` both flatten to `page_0.txt`: one silently
-    # won and was then graded against the other page's ground truth.
-    # _grade_pipeline refuses the same shape ("grading could silently use
-    # the wrong page"), and it rejects before writing anything — so do the
-    # check ahead of clear_staging, or a rejected upload would also
-    # destroy the staging that was already there.
-    kept: list[tuple[str, bytes]] = []
-    seen: dict[str, str] = {}
-    for name, data in files:
-        flat = Path(name).name
-        if flat.startswith("."):
-            continue
-        if flat in seen:
-            raise SessionError(
-                f"Two OCR files would end up with the same name "
-                f"({flat}), so grading could silently use the wrong page: "
-                f"{seen[flat]} and {name}. Flatten the folder or rename "
-                "these files, then try again.")
-        seen[flat] = name
-        kept.append((flat, data))
-    clear_staging(root, session_id)
-    ocr_dir = _staging(root, session_id) / "ocr"
-    ocr_dir.mkdir(parents=True)
-    for flat, data in kept:
-        (ocr_dir / flat).write_bytes(data)
-    by = "index" if session["source"]["type"] == "iiif" else "stem"
-    result = align(session["pages"], [p.name for p in ocr_dir.iterdir()], by=by)
-    (_staging(root, session_id) / "alignment.json").write_text(
-        json.dumps(result, indent=2), encoding="utf-8")
-    return result
+    # Locked like the session.json mutators (R2-S4): staging/ is what
+    # decides which OCR file grades which page, and unserialised, one
+    # request's clear_staging landed between another's write and its
+    # align(), so the alignment table on screen described files that were
+    # no longer staged. clear_staging below re-enters the same lock.
+    with session_lock(root, session_id):
+        session = _mutable(root, session_id)
+        # Names arrive relative to the picked folder, so `batch-a/page_0.txt`
+        # and `batch-b/page_0.txt` both flatten to `page_0.txt`: one silently
+        # won and was then graded against the other page's ground truth.
+        # _grade_pipeline refuses the same shape ("grading could silently use
+        # the wrong page"), and it rejects before writing anything — so do the
+        # check ahead of clear_staging, or a rejected upload would also
+        # destroy the staging that was already there.
+        kept: list[tuple[str, bytes]] = []
+        seen: dict[str, str] = {}
+        for name, data in files:
+            flat = Path(name).name
+            # `Path(".").name` and `Path("/").name` are `""`, which the
+            # dotfile skip below does not catch, so `(ocr_dir / "")`
+            # resolved to the directory itself and write_bytes raised
+            # IsADirectoryError — after clear_staging had already destroyed
+            # the real upload. Rejected rather than skipped: the dotfile
+            # skip is for picker junk (.DS_Store), and silently dropping a
+            # part the browser called a file would change the score for
+            # whichever page that OCR belonged to, with nothing on screen
+            # saying so.
+            if not flat or flat == "..":
+                raise SessionError(
+                    f"One of the OCR files has no usable filename ({name!r}), "
+                    "so it could not be matched to a page. Re-pick the OCR "
+                    "folder, or upload the files one by one.")
+            if flat.startswith("."):
+                continue
+            if flat in seen:
+                raise SessionError(
+                    f"Two OCR files would end up with the same name "
+                    f"({flat}), so grading could silently use the wrong page: "
+                    f"{seen[flat]} and {name}. Flatten the folder or rename "
+                    "these files, then try again.")
+            seen[flat] = name
+            kept.append((flat, data))
+        clear_staging(root, session_id)
+        ocr_dir = _staging(root, session_id) / "ocr"
+        _fresh_dir(ocr_dir)
+        for flat, data in kept:
+            (ocr_dir / flat).write_bytes(data)
+        by = "index" if session["source"]["type"] == "iiif" else "stem"
+        result = align(session["pages"], [p.name for p in ocr_dir.iterdir()], by=by)
+        (_staging(root, session_id) / "alignment.json").write_text(
+            json.dumps(result, indent=2), encoding="utf-8")
+        return result
 
 
 def stage_for_grade(
+    root: Path, session_id: str, overrides: dict[str, str]
+) -> tuple[Path, Path]:
+    # Locked for the same reason as stage_ocr (R2-S4): this is the step
+    # that copies a named OCR file next to a named transcription.
+    with session_lock(root, session_id):
+        return _stage_for_grade_locked(root, session_id, overrides)
+
+
+def _stage_for_grade_locked(
     root: Path, session_id: str, overrides: dict[str, str]
 ) -> tuple[Path, Path]:
     session = _mutable(root, session_id)
@@ -523,8 +643,7 @@ def stage_for_grade(
     staged_gt = _staging(root, session_id) / "grade" / "gt"
     staged_ocr = _staging(root, session_id) / "grade" / "ocr"
     for directory in (staged_gt, staged_ocr):
-        shutil.rmtree(directory, ignore_errors=True)
-        directory.mkdir(parents=True)
+        _fresh_dir(directory)
     for page in saved_pages:
         shutil.copy2(gt_path(root, session, page), staged_gt / f"{page['stem']}.gt.txt")
         ocr_name = mapping.get(page["stem"])
@@ -542,6 +661,14 @@ def _safe_collection(label: str) -> str:
 
 
 def export_session(root: Path, session_id: str) -> Path:
+    # Locked like the staging paths (R2-S4): export rmtrees and rebuilds
+    # export/ from session.json, so it must not run against a record that
+    # another request is halfway through rewriting.
+    with session_lock(root, session_id):
+        return _export_session_locked(root, session_id)
+
+
+def _export_session_locked(root: Path, session_id: str) -> Path:
     session = load_session(root, session_id)
     problems = reconcile(root, session)
     if problems:
@@ -550,7 +677,7 @@ def export_session(root: Path, session_id: str) -> Path:
     bundle_root = session_dir(root, session_id) / "export"
     shutil.rmtree(bundle_root, ignore_errors=True)
     bundle = bundle_root / collection / session_id
-    (bundle / "gt").mkdir(parents=True)
+    _fresh_dir(bundle / "gt")
     for page in session["pages"]:
         if page["status"] == "saved":
             shutil.copy2(gt_path(root, session, page), bundle / "gt" / f"{page['stem']}.gt.txt")

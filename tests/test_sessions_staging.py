@@ -1,9 +1,11 @@
 import json
+import threading
 import zipfile
 from pathlib import Path
 
 import pytest
 
+from dpi_eval import sessions
 from dpi_eval.iiif import CanvasRecord
 from dpi_eval.sessions import (
     SessionError, confirm_session, create_iiif_session, export_session,
@@ -146,6 +148,187 @@ def test_stage_ocr_rejects_colliding_basenames(iiif_session):
     assert "batch-a/page_0.txt" in message and "batch-b/page_0.txt" in message
     # Rejected before any write: earlier staging is not destroyed.
     assert survivor.read_bytes() == b"first pass"
+
+
+@pytest.mark.parametrize("hostile", [".", "..", "/"])
+def test_stage_ocr_rejects_a_name_with_no_basename(iiif_session, hostile):
+    """PAR R2-S6. `Path(".").name` is `""`, which is not caught by the
+    hidden-file skip (`"".startswith(".")` is False), so `(ocr_dir / "")`
+    resolved to the directory and write_bytes raised IsADirectoryError —
+    a 500, after clear_staging had already destroyed the real upload."""
+    root, sid = iiif_session
+    stage_ocr(root, sid, [("page_0.txt", b"first pass")])
+    survivor = session_dir(root, sid) / "staging" / "ocr" / "page_0.txt"
+    with pytest.raises(SessionError) as excinfo:
+        stage_ocr(root, sid, [(hostile, b"x")])
+    assert "no usable filename" in excinfo.value.message
+    # Rejected before any write, like the collision check next to it.
+    assert survivor.read_bytes() == b"first pass"
+
+
+def _probe_lock(root, session_id, timeout=3.0):
+    """Try to take the session lock from a *fresh* thread. The lock is
+    re-entrant per thread, so probing on the thread under test would
+    always succeed and prove nothing."""
+    outcome = []
+
+    def run():
+        try:
+            with sessions.session_lock(root, session_id):
+                outcome.append("acquired")
+        except SessionError:
+            outcome.append("denied")
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():  # pragma: no cover - would mean the lock hangs
+        return "hung"
+    return outcome[0]
+
+
+def _probing_reconcile(root, session_id, seen):
+    """reconcile() is the first thing stage_for_grade and export_session
+    call, so it is where the lock either is or is not already held."""
+    def reconcile(*_args, **_kwargs):
+        seen.append(_probe_lock(root, session_id))
+        return []
+    return reconcile
+
+
+def test_stage_ocr_holds_the_session_lock(iiif_session, monkeypatch):
+    """PAR R2-S4. staging/ decides which OCR file grades which page, so it
+    needs the same serialization session.json got."""
+    root, sid = iiif_session
+    monkeypatch.setattr(sessions, "LOCK_TIMEOUT", 0.2)
+    real_align = sessions.align
+    seen = []
+
+    def probing_align(*args, **kwargs):
+        seen.append(_probe_lock(root, sid))
+        return real_align(*args, **kwargs)
+
+    monkeypatch.setattr(sessions, "align", probing_align)
+    stage_ocr(root, sid, [("page_0.hocr", b"x")])
+    assert seen == ["denied"]
+
+
+def test_stage_for_grade_holds_the_session_lock(iiif_session, monkeypatch):
+    """PAR R2-S4."""
+    root, sid = iiif_session
+    save_page(root, sid, 0, "text\n", elapsed=1, active=1, nonce="a")
+    stage_ocr(root, sid, [("page_0.hocr", b"x")])
+    monkeypatch.setattr(sessions, "LOCK_TIMEOUT", 0.2)
+    seen = []
+    monkeypatch.setattr(sessions, "reconcile", _probing_reconcile(root, sid, seen))
+    stage_for_grade(root, sid, {})
+    assert seen == ["denied"]
+
+
+def test_export_session_holds_the_session_lock(iiif_session, monkeypatch):
+    """PAR R2-S4. export rmtrees and rebuilds export/ the same way."""
+    root, sid = iiif_session
+    save_page(root, sid, 0, "text\n", elapsed=1, active=1, nonce="a")
+    monkeypatch.setattr(sessions, "LOCK_TIMEOUT", 0.2)
+    seen = []
+    monkeypatch.setattr(sessions, "reconcile", _probing_reconcile(root, sid, seen))
+    export_session(root, sid)
+    assert seen == ["denied"]
+
+
+def test_concurrent_stage_ocr_keeps_alignment_and_staged_files_in_step(
+        iiif_session, monkeypatch):
+    """PAR R2-S4. One request's clear_staging could land between another's
+    write and its align(), so the alignment table on screen described files
+    that were no longer staged — a student would confirm a grade against
+    OCR that is not there."""
+    root, sid = iiif_session
+    entered = threading.Event()
+    release = threading.Event()
+    real_align = sessions.align
+    calls = []
+
+    def gated_align(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            entered.set()
+            release.wait(5)
+        return real_align(*args, **kwargs)
+
+    monkeypatch.setattr(sessions, "align", gated_align)
+    errors = []
+
+    def stage(name, data):
+        try:
+            stage_ocr(root, sid, [(name, data)])
+        except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
+            errors.append(repr(exc))
+
+    first = threading.Thread(target=stage, args=("page_0.hocr", b"first"))
+    first.start()
+    assert entered.wait(5), "first stage_ocr never reached align()"
+    second = threading.Thread(target=stage, args=("page_1.hocr", b"second"))
+    second.start()
+    # Unserialised, `second` runs to completion inside this window and
+    # clears the files `first` is still aligning.
+    second.join(0.5)
+    release.set()
+    first.join(5)
+    second.join(5)
+
+    staging = session_dir(root, sid) / "staging"
+    staged = {p.name for p in (staging / "ocr").iterdir()}
+    matched = json.loads((staging / "alignment.json").read_text())["matched"]
+    assert not errors, errors
+    assert set(matched.values()) <= staged, (
+        f"alignment names {sorted(matched.values())} but staging holds "
+        f"{sorted(staged)}")
+
+
+def test_clear_staging_leaves_staging_alone_while_a_writer_holds_the_lock(
+        iiif_session, monkeypatch):
+    """PAR R2-S4. An unserialised clear deleted the OCR another request had
+    just staged and was still aligning. Cleanup skips rather than raises:
+    it runs after a grade run has finished, nothing waits on it, and the
+    next preview re-stages under the lock."""
+    root, sid = iiif_session
+    stage_ocr(root, sid, [("page_0.hocr", b"first pass")])
+    staged = session_dir(root, sid) / "staging" / "ocr" / "page_0.hocr"
+    monkeypatch.setattr(sessions, "LOCK_TIMEOUT", 0.2)
+    holding = threading.Event()
+    finish = threading.Event()
+
+    def holder():
+        with sessions.session_lock(root, sid):
+            holding.set()
+            finish.wait(5)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    assert holding.wait(5)
+    try:
+        sessions.clear_staging(root, sid)  # cleanup, so it must not raise
+    finally:
+        finish.set()
+        thread.join(5)
+    assert staged.read_bytes() == b"first pass"
+
+
+def test_stage_ocr_refuses_a_staging_directory_it_could_not_clear(
+        iiif_session, monkeypatch):
+    """PAR R2-S4. clear_staging swallows rmtree failures (ignore_errors),
+    so the following mkdir(parents=True) escaped as a bare FileExistsError
+    — an unhandled OSError, i.e. a 500. exist_ok would be the wrong fix:
+    the previous upload's files would survive and align() would report OCR
+    the student did not pick."""
+    root, sid = iiif_session
+    stage_ocr(root, sid, [("page_0.hocr", b"first pass")])
+    monkeypatch.setattr(sessions.shutil, "rmtree", lambda *a, **k: None)
+    with pytest.raises(SessionError) as excinfo:
+        stage_ocr(root, sid, [("page_1.hocr", b"second pass")])
+    assert "staging" in excinfo.value.message
+    ocr_dir = session_dir(root, sid) / "staging" / "ocr"
+    assert {p.name for p in ocr_dir.iterdir()} == {"page_0.hocr"}
 
 
 def test_export_flattens_hostile_collection_label(tmp_path):
