@@ -1,9 +1,23 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from PIL import Image, features
 
-from dpi_eval.derive import DeriveError, derive, image_dims, info_json, parse_params
+from dpi_eval.derive import MAX_DIM, DeriveError, derive, image_dims, info_json, parse_params
+
+
+@pytest.fixture
+def master_bicolor(tmp_path: Path) -> Path:
+    """400x200 master, left half red, right half blue -- lets tests verify
+    a crop pulled the correct region rather than just the correct size."""
+    path = tmp_path / "bicolor.png"
+    img = Image.new("RGB", (400, 200), color=(0, 0, 255))
+    for x in range(200):
+        for y in range(200):
+            img.putpixel((x, y), (255, 0, 0))
+    img.save(path)
+    return path
 
 
 @pytest.fixture
@@ -52,10 +66,76 @@ def test_derive_converts_and_caches(master_tiff, tmp_path):
     assert again.stat().st_mtime_ns == first_mtime  # cached, not re-derived
 
 
-def test_derive_region_and_confined_size(master_png, tmp_path):
-    out = derive(master_png, "0,0,200,200", "!100,100", tmp_path / "d")
+def test_derive_region_and_confined_size(master_bicolor, tmp_path):
+    # Region is 2:1 (200x100 of a 400x200 master), so a confined !100,100
+    # box must preserve aspect ratio -> 100x50, not a forced square.
+    out = derive(master_bicolor, "0,0,200,100", "!100,100", tmp_path / "d")
     with Image.open(out) as img:
-        assert max(img.size) == 100
+        assert img.size == (100, 50)
+
+
+def test_derive_region_crops_correct_area(master_bicolor, tmp_path):
+    # Left half of the master is red; cropping just that half must not
+    # pick up any blue from the right half.
+    out = derive(master_bicolor, "0,0,200,200", "max", tmp_path / "d")
+    with Image.open(out) as img:
+        assert img.size == (200, 200)
+        r, g, b = img.getpixel((100, 100))
+        assert r > 150 and b < 100
+
+
+def test_derive_rejects_oversized_width(master_png, tmp_path):
+    with pytest.raises(DeriveError) as exc_info:
+        derive(master_png, "full", "100000,", tmp_path / "d")
+    assert exc_info.value.status == 400
+
+
+def test_derive_rejects_oversized_confined(master_png, tmp_path):
+    with pytest.raises(DeriveError) as exc_info:
+        derive(master_png, "full", f"!{MAX_DIM + 1},{MAX_DIM + 1}", tmp_path / "d")
+    assert exc_info.value.status == 400
+
+
+def test_derive_rejects_upscale_plain_width(master_png, tmp_path):
+    # master_png is 400x200; asking for 800, would upscale without the
+    # IIIF '^' prefix this service does not implement.
+    with pytest.raises(DeriveError) as exc_info:
+        derive(master_png, "full", "800,", tmp_path / "d")
+    assert exc_info.value.status == 400
+
+
+def test_derive_rejects_upscale_plain_height(master_png, tmp_path):
+    with pytest.raises(DeriveError) as exc_info:
+        derive(master_png, "full", ",400", tmp_path / "d")
+    assert exc_info.value.status == 400
+
+
+def test_derive_confined_size_never_upscales(master_png, tmp_path):
+    # master_png is 400x200; a confined box larger than the source must
+    # not enlarge it (this already worked via Image.thumbnail, and must
+    # keep working now that plain w,/,h reject upscaling outright).
+    out = derive(master_png, "full", "!800,800", tmp_path / "d")
+    with Image.open(out) as img:
+        assert img.size == (400, 200)
+
+
+def test_derive_rejects_zero_size_as_client_error(master_png, tmp_path):
+    cache = tmp_path / "d"
+    with pytest.raises(DeriveError) as exc_info:
+        derive(master_png, "full", "0,", cache)
+    assert exc_info.value.status == 400
+    assert "master" not in str(exc_info.value).lower()
+    # no .tmp leftovers from a request that never should have started a save
+    assert not any(cache.glob("**/*.tmp")) if cache.exists() else True
+
+
+def test_derive_cleans_up_tmp_on_save_failure(master_png, tmp_path):
+    cache = tmp_path / "d"
+    with patch("PIL.Image.Image.save", side_effect=OSError("disk full")):
+        with pytest.raises(DeriveError) as exc_info:
+            derive(master_png, "full", "max", cache)
+    assert exc_info.value.status == 500
+    assert not list(cache.glob("*.tmp"))
 
 
 @pytest.mark.skipif(
