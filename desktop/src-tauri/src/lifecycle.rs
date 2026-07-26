@@ -14,6 +14,7 @@
 use std::io::{BufRead, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -123,6 +124,24 @@ pub struct Sidecar {
 /// can reach it too.
 static SIDECAR: Mutex<Option<Sidecar>> = Mutex::new(None);
 
+/// Set once [`shutdown`] has been asked for (window close, app exit, or
+/// SIGTERM/SIGINT). Startup failures that are really just "the user quit while
+/// we were still booting" consult this instead of raising an error dialog after
+/// exit was already requested.
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+fn shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(Ordering::SeqCst)
+}
+
+/// The bootstrap step currently running, if any — its process group (unix) or
+/// its Job Object (windows). Separate from [`SIDECAR`] because the two never
+/// overlap in time and the bootstrap child is owned by [`run_step`]'s own thread.
+#[cfg(unix)]
+static BOOTSTRAP_STEP: Mutex<Option<i32>> = Mutex::new(None);
+#[cfg(windows)]
+static BOOTSTRAP_STEP: Mutex<Option<job::JobHandle>> = Mutex::new(None);
+
 // ---------------------------------------------------------------------------
 // Entry point (called from `setup` on a worker thread)
 // ---------------------------------------------------------------------------
@@ -131,6 +150,19 @@ pub fn run(app: AppHandle) {
     let log_path = sidecar_log_path(&app);
     if let Err(detail) = run_inner(&app, &log_path) {
         eprintln!("[dpi-eval-desktop] startup failed: {detail}");
+        // Was the app already quitting when this failed? Read before our own
+        // cleanup sets the flag.
+        let quitting = shutdown_requested();
+        // Every failure path after the sidecar is spawned leaves a server
+        // listening on loopback with the launch token. Take the tree down before
+        // telling the user we could not start; target machines have no terminal
+        // for them to clean up by hand.
+        shutdown();
+        if quitting {
+            // The user asked to exit; an error modal raised after that is noise
+            // they cannot act on.
+            return;
+        }
         emit_status(&app, &format!("failed: {detail}"));
         app.dialog()
             .message(format!(
@@ -176,12 +208,12 @@ fn run_inner(app: &AppHandle, log_path: &Path) -> Result<(), String> {
         "[dpi-eval-desktop] sidecar spawned, pid {}",
         sidecar.child.id()
     );
-    let stdout = sidecar
-        .child
-        .stdout
-        .take()
-        .ok_or_else(|| "sidecar stdout was not piped".to_string())?;
+    // Record the sidecar before anything that can fail: `std::process::Child`
+    // has no killing `Drop`, so an early return here would leave a listening,
+    // token-bearing server with no handle for `shutdown` to reach.
+    let stdout = sidecar.child.stdout.take();
     *SIDECAR.lock().unwrap() = Some(sidecar);
+    let stdout = stdout.ok_or_else(|| "sidecar stdout was not piped".to_string())?;
 
     // Forward stdout lines to the handshake (and echo them into the log).
     // The reader thread keeps draining after the handshake drops the receiver
@@ -194,13 +226,14 @@ fn run_inner(app: &AppHandle, log_path: &Path) -> Result<(), String> {
             .append(true)
             .open(&stdout_log)
             .ok();
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
+        drain_lines(stdout, |line| {
             if let Some(log) = log.as_mut() {
                 let _ = writeln!(log, "{line}");
             }
+            // Ignore send errors: once the handshake drops the receiver we keep
+            // draining so the sidecar's stdout pipe never fills up.
             let _ = tx.send(line);
-        }
+        });
     });
 
     // 3a. Wait for the sentinel line.
@@ -251,6 +284,35 @@ fn run_inner(app: &AppHandle, log_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Read `source` line by line, decoding each line lossily, and hand every line
+/// to `on_line`. Returns at EOF or on a genuine read error.
+///
+/// Deliberately not `BufRead::lines()`: that yields `Err(InvalidData)` for a
+/// single non-UTF-8 byte anywhere in the stream. Treating that as end-of-stream
+/// both misreports a healthy sidecar ("closed stdout before announcing its URL")
+/// and stops draining stdout, which would eventually fill the pipe and block the
+/// sidecar's own writes. One stray byte in a traceback or a filename must not
+/// abort startup.
+fn drain_lines(source: impl std::io::Read, mut on_line: impl FnMut(String)) {
+    let mut reader = BufReader::new(source);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) => return, // EOF
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("[dpi-eval-desktop] error reading sidecar stdout: {e}");
+                return;
+            }
+        }
+        while matches!(buf.last(), Some(b'\n' | b'\r')) {
+            buf.pop();
+        }
+        on_line(String::from_utf8_lossy(&buf).into_owned());
+    }
+}
+
 fn emit_status(app: &AppHandle, status: &str) {
     let _ = app.emit_to("main", "bootstrap-status", status.to_string());
 }
@@ -271,15 +333,23 @@ fn check_deadline(deadline: Instant, what: &str) -> Result<(), String> {
     }
 }
 
-/// Err if the sidecar has already exited.
+/// Err unless a sidecar is recorded *and* still running.
+///
+/// An empty slot is a failure, not health: the handshake only calls this after
+/// registration, so `None` means [`shutdown`] has already taken the sidecar
+/// (the user is quitting). Reporting "alive" there made the handshake poll a
+/// dead port for the rest of its 60 s budget and then raise a modal dialog.
 fn check_alive() -> Result<(), String> {
     let mut guard = SIDECAR.lock().unwrap();
-    if let Some(sidecar) = guard.as_mut() {
-        if let Ok(Some(status)) = sidecar.child.try_wait() {
-            return Err(format!("dpi-eval-web exited during startup ({status})"));
-        }
+    let Some(sidecar) = guard.as_mut() else {
+        return Err("dpi-eval-web is no longer running".into());
+    };
+    match sidecar.child.try_wait() {
+        Ok(None) => Ok(()),
+        Ok(Some(status)) => Err(format!("dpi-eval-web exited during startup ({status})")),
+        // A failing waitpid is not evidence of health.
+        Err(e) => Err(format!("cannot check on dpi-eval-web: {e}")),
     }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -429,16 +499,61 @@ pub fn ensure_venv(
 }
 
 /// Run a bootstrap step to completion; Err carries the step name + stderr tail.
+///
+/// Bootstrap steps get the same tree-kill treatment as the sidecar: `python -m
+/// venv` and the `pip install` runs are the longest window in the whole
+/// lifecycle (minutes on a cold start), and quitting mid-install must not leave
+/// pip writing into `<app_data>/venv`. The bootstrap marker is written only
+/// after the last step succeeds, so an orphan surviving here would still be
+/// unpacking wheels while the *next* launch's `remove_dir_all` tore the tree out
+/// from under it.
 fn run_step(what: &str, cmd: &mut Command) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let out = cmd
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("{what}: {e}"))?;
+    #[cfg(unix)]
+    configure_child(cmd);
+
+    // Capture both streams (as `Command::output` did) so pip's chatter stays out
+    // of the app's own stdio; only the stderr tail is reported.
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // Windows: create the job *before* spawning, so the only thing that can fail
+    // with a live unregistered child is the assignment itself.
+    #[cfg(windows)]
+    let job =
+        job::JobHandle::new().map_err(|e| format!("{what}: cannot create job object: {e}"))?;
+
+    #[allow(unused_mut)]
+    let mut child = cmd.spawn().map_err(|e| format!("{what}: {e}"))?;
+
+    #[cfg(unix)]
+    {
+        // `configure_child` made the child its own process-group leader, so its
+        // pid doubles as the pgid `shutdown` kills.
+        *BOOTSTRAP_STEP.lock().unwrap() = Some(child.id() as i32);
+    }
+    #[cfg(windows)]
+    {
+        if let Err(e) = job.assign(&child) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("{what}: cannot assign job object: {e}"));
+        }
+        *BOOTSTRAP_STEP.lock().unwrap() = Some(job);
+    }
+
+    let waited = child.wait_with_output().map_err(|e| format!("{what}: {e}"));
+    // Deregister before inspecting the result: the child is reaped, so the pid
+    // (and hence the pgid) may be reused from here on. On windows dropping the
+    // taken `JobHandle` closes the now-empty job.
+    let _taken = BOOTSTRAP_STEP.lock().unwrap().take();
+    let out = waited?;
+
     if out.status.success() {
         Ok(())
     } else {
@@ -471,6 +586,52 @@ fn venv_bin_dir(venv: &Path) -> PathBuf {
     #[cfg(windows)]
     {
         venv.join("Scripts")
+    }
+}
+
+/// An all-clear signal set, computed in the parent so a `pre_exec` closure can
+/// install it with a single async-signal-safe call.
+#[cfg(unix)]
+fn empty_sigset() -> libc::sigset_t {
+    // SAFETY: `sigset_t` is a plain bitset/array; zeroing then `sigemptyset`ing
+    // it is the portable way to obtain an initialised empty set.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        set
+    }
+}
+
+/// Unix child setup shared by the sidecar and every bootstrap step.
+///
+/// 1. New session, so the child leads its own process group and a later
+///    `killpg` reaches every descendant (uvicorn workers, `dinglehopper`).
+/// 2. Empty signal mask. [`install_signal_watcher`] blocks SIGTERM/SIGINT for
+///    the whole app process, and a signal mask survives fork+execve, so without
+///    this reset the child would start with both signals blocked — [`shutdown`]'s
+///    `killpg(SIGTERM)` would be ignored, uvicorn's graceful shutdown would never
+///    run, and every quit would end in SIGKILL.
+#[cfg(unix)]
+fn configure_child(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // Built here, in the parent, so the closure body stays allocation-free.
+    let empty = empty_sigset();
+    // SAFETY: the closure runs in the forked child between fork and execve, so
+    // it may only make async-signal-safe calls and must not allocate or lock.
+    // `setsid` and `pthread_sigmask` are both async-signal-safe, and `empty` is
+    // a plain `Copy` bitset captured by value.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // pthread_sigmask returns the errno rather than setting it.
+            let rc = libc::pthread_sigmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut());
+            if rc != 0 {
+                return Err(std::io::Error::from_raw_os_error(rc));
+            }
+            Ok(())
+        });
     }
 }
 
@@ -518,17 +679,7 @@ pub fn spawn_sidecar(venv: &Path, log_path: &Path) -> std::io::Result<Sidecar> {
         .stderr(Stdio::from(log));
 
     #[cfg(unix)]
-    unsafe {
-        use std::os::unix::process::CommandExt;
-        // New session ⇒ the child leads its own process group; killpg on its
-        // pid later reaches every descendant (uvicorn workers, dinglehopper).
-        cmd.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    configure_child(&mut cmd);
 
     #[cfg(windows)]
     {
@@ -536,17 +687,27 @@ pub fn spawn_sidecar(venv: &Path, log_path: &Path) -> std::io::Result<Sidecar> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let child = cmd.spawn()?;
+    // Create the job *before* spawning: a failure here must not leave a spawned
+    // child unregistered, since `Child` has no killing `Drop`.
+    #[cfg(windows)]
+    let job = job::JobHandle::new().map_err(std::io::Error::other)?;
+
+    #[allow(unused_mut)]
+    let mut child = cmd.spawn()?;
 
     #[cfg(windows)]
-    let job = {
+    {
         // Assign immediately after spawn; kill-on-close then covers the child
         // and everything it forks from here on. (The tiny window before
-        // assignment closes before Python has run any code.)
-        let job = job::JobHandle::new().map_err(std::io::Error::other)?;
-        job.assign(&child).map_err(std::io::Error::other)?;
-        job
-    };
+        // assignment closes before Python has run any code.) If assignment
+        // fails we own a live, unregistered child — kill it rather than orphan a
+        // server that is about to start listening with the launch token.
+        if let Err(e) = job.assign(&child) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::other(e));
+        }
+    }
 
     Ok(Sidecar {
         child,
@@ -590,9 +751,13 @@ fn http_get_ok(host: &str, port: u16) -> bool {
 // Shutdown
 // ---------------------------------------------------------------------------
 
-/// Kill the sidecar's whole process tree. Idempotent (the slot is taken), so
-/// wiring it to ExitRequested, Exit, and the signal watcher is safe.
+/// Kill whatever child tree we own — an in-flight bootstrap step, or the
+/// running sidecar. Idempotent (both slots are taken), so wiring it to
+/// ExitRequested, Exit, the signal watcher, and startup failure is safe.
 pub fn shutdown() {
+    SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+    kill_bootstrap_step();
+
     let Some(mut sidecar) = SIDECAR.lock().unwrap().take() else {
         return;
     };
@@ -627,6 +792,30 @@ pub fn shutdown() {
         // terminates every process in the job.
         drop(sidecar.job);
         let _ = sidecar.child.wait();
+    }
+}
+
+/// Kill an in-flight bootstrap step (`python -m venv` / `pip install`) and its
+/// descendants.
+///
+/// Unix sends SIGTERM only, and does not wait: `run_step`'s own thread owns the
+/// child and reaps it, so there is nothing here to `wait` for, and a follow-up
+/// SIGKILL could land on a recycled pgid. Neither `venv` nor `pip` installs a
+/// SIGTERM handler, so the default disposition ends them promptly.
+fn kill_bootstrap_step() {
+    #[cfg(unix)]
+    if let Some(pgid) = BOOTSTRAP_STEP.lock().unwrap().take() {
+        eprintln!("[dpi-eval-desktop] terminating bootstrap process group {pgid}");
+        unsafe {
+            let _ = libc::killpg(pgid, libc::SIGTERM);
+        }
+    }
+
+    #[cfg(windows)]
+    if let Some(job) = BOOTSTRAP_STEP.lock().unwrap().take() {
+        // Closing the handle triggers JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
+        eprintln!("[dpi-eval-desktop] terminating bootstrap job object");
+        drop(job);
     }
 }
 
@@ -793,6 +982,129 @@ mod tests {
         let taken = [PathBuf::from("/downloads/archive")];
         let noext = dedupe_download_path(dir, "archive", |p| taken.contains(&p.to_path_buf()));
         assert_eq!(noext, PathBuf::from("/downloads/archive (1)"));
+    }
+
+    /// A single non-UTF-8 byte on sidecar stdout must not abandon the stream:
+    /// the bad line is decoded lossily and later lines (including the sentinel)
+    /// still arrive. `BufRead::lines()` fails this — it yields
+    /// `Err(InvalidData)`, which used to be read as "the sidecar closed stdout".
+    #[test]
+    fn drain_lines_survives_invalid_utf8_and_keeps_reading() {
+        let input: &[u8] =
+            b"starting\nlatin-1 caf\xe9\ndpi-eval-web running at http://127.0.0.1:8765\nbye\n";
+        let mut lines = Vec::new();
+        drain_lines(input, |line| lines.push(line));
+
+        assert_eq!(lines.len(), 4, "every line must survive: {lines:?}");
+        assert_eq!(lines[0], "starting");
+        assert!(
+            lines[1].starts_with("latin-1 caf"),
+            "bad bytes decode lossily, not fatally: {:?}",
+            lines[1]
+        );
+        assert_eq!(
+            parse_sentinel(&lines[2]),
+            Some("http://127.0.0.1:8765".to_string()),
+            "the sentinel after the bad line must still be seen"
+        );
+        assert_eq!(lines[3], "bye");
+    }
+
+    #[test]
+    fn drain_lines_strips_crlf_and_yields_a_final_unterminated_line() {
+        let mut lines = Vec::new();
+        drain_lines(&b"one\r\ntwo"[..], |line| lines.push(line));
+        assert_eq!(lines, vec!["one".to_string(), "two".to_string()]);
+    }
+
+    /// `main` blocks SIGTERM/SIGINT process-wide so a watcher thread can
+    /// tree-kill the sidecar first. That mask survives fork+execve, so without
+    /// an explicit reset the sidecar (and everything it forks) ignores the
+    /// SIGTERM `shutdown` sends. Verified behaviourally: a child that signals
+    /// itself must die, not print.
+    #[cfg(unix)]
+    #[test]
+    fn child_does_not_inherit_a_blocked_signal_mask() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let mut blocked = empty_sigset();
+        let mut previous = empty_sigset();
+        unsafe {
+            libc::sigaddset(&mut blocked, libc::SIGTERM);
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, &mut previous),
+                0
+            );
+        }
+
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg("kill -TERM $$; echo SURVIVED");
+        configure_child(&mut cmd);
+        let out = cmd.output().expect("/bin/sh is spawnable");
+
+        // Restore this thread's mask before asserting, so a failure cannot
+        // leave the rest of the test binary with SIGTERM blocked.
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut());
+        }
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !stdout.contains("SURVIVED"),
+            "child ran past its own SIGTERM, so the signal was blocked: {stdout:?}"
+        );
+        assert_eq!(
+            out.status.signal(),
+            Some(libc::SIGTERM),
+            "child should have been terminated by SIGTERM, got {:?}",
+            out.status
+        );
+    }
+
+    /// `shutdown` reaches descendants via `killpg`, which only works if the
+    /// child leads its own process group.
+    #[cfg(unix)]
+    #[test]
+    fn child_leads_its_own_process_group() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg("exec sleep 30")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_child(&mut cmd);
+        let mut child = cmd.spawn().expect("/bin/sh is spawnable");
+        let pid = child.id() as i32;
+
+        let pgid = unsafe { libc::getpgid(pid) };
+        unsafe {
+            libc::killpg(pid, libc::SIGKILL);
+        }
+        let _ = child.wait();
+
+        assert_eq!(pgid, pid, "child must be its own process-group leader");
+    }
+
+    /// `check_alive` is the handshake's liveness gate. With no sidecar recorded
+    /// there is nothing to hand a URL to, so reporting "alive" makes the
+    /// handshake poll a dead port for the rest of its 60 s budget.
+    #[test]
+    fn check_alive_errors_when_no_sidecar_is_recorded() {
+        // The slot is process-global; no other test registers a sidecar.
+        assert!(SIDECAR.lock().unwrap().is_none());
+        assert!(
+            check_alive().is_err(),
+            "an empty sidecar slot is not a healthy sidecar"
+        );
+    }
+
+    /// Startup-failure reporting must stay quiet once the app is quitting:
+    /// otherwise cancelling during bootstrap raises a modal error dialog after
+    /// exit was already requested.
+    #[test]
+    fn shutdown_marks_the_process_as_quitting() {
+        assert!(!shutdown_requested(), "flag starts clear");
+        shutdown();
+        assert!(shutdown_requested(), "shutdown must record the intent");
     }
 
     #[test]
