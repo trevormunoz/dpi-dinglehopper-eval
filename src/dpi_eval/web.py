@@ -15,6 +15,7 @@ import socket
 import threading
 import webbrowser
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -43,7 +44,14 @@ def _real_uploads(uploads: list[UploadFile]) -> list[UploadFile]:
     for upload in uploads:
         if not upload.filename:
             continue
-        if Path(upload.filename).name.startswith("."):
+        flat = Path(upload.filename).name
+        # R2-S6: `Path(name).name` is "" for "." and "/" (".." keeps ".." and
+        # was already dropped), so a `startswith(".")` test alone let those
+        # through and `_save` then did `(dest / "").write_bytes(...)` — a write
+        # to the directory itself, raising IsADirectoryError with run-NNN/gt
+        # already populated. An empty flattened basename names no file, so it
+        # is junk like the rest.
+        if not flat or flat.startswith("."):
             continue
         kept.append(upload)
     return kept
@@ -168,8 +176,22 @@ def _grade_pipeline(
         )
 
     run_dir = _next_run_dir(base_dir)
-    _save(gt_kept, run_dir / "gt")
-    _save(ocr_kept, run_dir / "ocr")
+    try:
+        _save(gt_kept, run_dir / "gt")
+        _save(ocr_kept, run_dir / "ocr")
+    except OSError as exc:
+        # R2-S6: a name the OS itself refuses (an empty flattened basename used
+        # to be one; an over-NAME_MAX name still is) fails partway through the
+        # save, leaving a run directory that holds some of the batch, has no
+        # result.json, and can only 404 from /runs/{id} — while shifting the
+        # number of every later run. Roll it back so a save failure leaves no
+        # partial run behind either, and answer in the same voice as the
+        # validations above rather than with a traceback.
+        shutil.rmtree(run_dir, ignore_errors=True)
+        raise GradeValidationError(
+            "One of the files could not be saved for grading, so nothing "
+            f"was graded: {exc}. Check the file names, then try again."
+        ) from exc
 
     pairs, missing_gt = discover_pairs(run_dir / "gt", run_dir / "ocr")
     if not pairs:
@@ -227,17 +249,34 @@ def _run_and_register(gt_dir: Path, ocr_dir: Path, base_dir: Path) -> Path:
     return _register(run_dir)
 
 
-def _check_token(request: Request, form_token: str | None = None) -> None:
+def _check_token(request: Request, form_token: object = None) -> None:
     """403 unless the caller supplies the per-launch token via the
-    X-DPI-Eval-Token header or a form field; also 403 when unset."""
+    X-DPI-Eval-Token header or a form field; also 403 when unset.
+
+    A gate that raises is not a gate, so every input shape has to reach the
+    comparison as bytes it cannot match with:
+
+    - S12: compare_digest refuses a non-ASCII `str` with a TypeError, so a
+      latin-1-decoded header or a UTF-8 form field made the gate fault (500)
+      instead of denying. UTF-8 bytes accept any `str`.
+    - R2-S1: the form value is not necessarily a `str` at all. `form.get("token")`
+      returns an UploadFile when `token` arrives as a *file* part, and
+      multipart/form-data is CORS-safelisted, so any page can send that shape
+      with no preflight. Nothing but `str` has `.encode`, so the gate faulted
+      again. Non-`str` supplies no token, which is a 403 like any other miss.
+
+    The routes that declare the field with `Form()` annotate it `Any`, not
+    `str`, so an odd shape reaches this gate and is denied here rather than
+    pre-empted by a pydantic 422 that never consults the token at all.
+
+    The comparison stays constant-time for the legitimate path.
+    """
     token = os.environ.get("DPI_EVAL_TOKEN")
     supplied = request.headers.get("X-DPI-Eval-Token") or form_token
-    # S12: compare_digest refuses non-ASCII `str` with a TypeError, so a
-    # latin-1-decoded header or a UTF-8 form field made the gate fault (500)
-    # instead of denying. UTF-8 bytes accept any input and the comparison
-    # stays constant-time for the legitimate path.
+    if not isinstance(supplied, str):  # None, UploadFile, list, bytes, …
+        supplied = ""
     if not token or not secrets.compare_digest(
-        (supplied or "").encode("utf-8"), token.encode("utf-8")
+        supplied.encode("utf-8"), token.encode("utf-8")
     ):
         raise HTTPException(status_code=403)
 
@@ -291,7 +330,12 @@ def _report_file(reports_dir: Path, name: str) -> Path | None:
     control characters, dot-only names, and leading dots (hidden files are
     dropped before grading, so no real report has one). Containment is then
     re-checked against the resolved directory, so nothing rests on the
-    pattern alone. Returns None when the name is unsafe or has no report.
+    pattern alone: a symlinked report is the shape the pattern cannot see —
+    a plain stem, `is_file()` true, resolving outside reports_dir — and it is
+    the case the re-check alone catches (pinned by
+    test_wrapped_report_refuses_a_symlinked_report, which was missing until
+    PAR round 2 showed the re-check could be deleted with the suite green).
+    Returns None when the name is unsafe or has no report.
     """
     if not name or name.startswith(".") or _UNSAFE_REPORT_NAME.search(name):
         return None
@@ -338,7 +382,7 @@ def create_app(
     @app.post("/grade")
     def grade(
         request: Request,
-        token: str = Form(default=None),
+        token: Any = Form(default=None),
         gt_files: list[UploadFile] = File(default=[]),
         ocr_files: list[UploadFile] = File(default=[]),
     ):
@@ -462,7 +506,7 @@ def create_app(
     @app.post("/transcribe/sessions", response_class=HTMLResponse)
     def transcribe_create(
         request: Request,
-        token: str = Form(default=None),
+        token: Any = Form(default=None),
         source_type: str = Form(...),
         folder: str = Form(default=""),
         manifest_url: str = Form(default=""),
@@ -487,7 +531,7 @@ def create_app(
     @app.post("/transcribe/sessions/{sid}/confirm")
     def transcribe_confirm(
         sid: str, request: Request,
-        token: str = Form(default=None),
+        token: Any = Form(default=None),
         pages_selected: list[str] = Form(default=[], alias="pages"),
     ):
         _check_token(request, token)
@@ -625,12 +669,22 @@ def create_app(
             run_dir = _run_and_register(gt_dir, ocr_dir, base_dir)
         except sess.SessionError as exc:
             return HTMLResponse(pages.error_page(str(exc)), status_code=400)
-        finally:
-            sess.clear_staging(trans_root, sid)
+        # R2-S3: this used to be a bare `finally`, so every rejection out of
+        # stage_for_grade — bad override name, unresolved needs-attention pages,
+        # nothing saved yet — deleted the staged OCR upload the error message
+        # tells the student to fix, and the retry then said "Upload or pick the
+        # OCR folder first (preview step)." stage_ocr states the rule for the
+        # same shape of check (sessions.py: "do the check ahead of
+        # clear_staging, or a rejected upload would also destroy the staging
+        # that was already there"). Clearing belongs on the success path: by
+        # here the graded gt/ocr copies are in the run directory, so staging has
+        # no reader left. It cannot accumulate — the next preview's stage_ocr
+        # clears it before re-staging, so a session holds at most one.
+        sess.clear_staging(trans_root, sid)
         return RedirectResponse(f"/runs/{run_dir.name}", status_code=303)
 
     @app.post("/transcribe/sessions/{sid}/clone")
-    def clone_session(sid: str, request: Request, token: str = Form(default=None),
+    def clone_session(sid: str, request: Request, token: Any = Form(default=None),
                       draft_folder: str = Form(default="")):
         _check_token(request, token)
         try:
@@ -669,7 +723,7 @@ def create_app(
         return RedirectResponse(f"/transcribe/sessions/{clone['id']}", status_code=303)
 
     @app.post("/transcribe/sessions/{sid}/export")
-    def export(sid: str, request: Request, token: str = Form(default=None)):
+    def export(sid: str, request: Request, token: Any = Form(default=None)):
         _check_token(request, token)
         try:
             archive = sess.export_session(trans_root, sid)

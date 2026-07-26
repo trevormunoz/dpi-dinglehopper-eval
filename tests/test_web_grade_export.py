@@ -48,6 +48,47 @@ def test_grade_preview_upload_then_confirm_redirects_to_run(session_with_gt):
     assert results.status_code == 200
 
 
+def test_rejected_override_keeps_the_staging_its_error_tells_you_to_fix(
+        session_with_gt, tmp_path):
+    """R2-S3: `clear_staging` sat in a bare `finally`, so every error path out
+    of `stage_for_grade` deleted the staged OCR upload. The 400 says the
+    override "is not a plain filename from the staged OCR upload" — and the
+    upload it names had just been erased, so retrying said "Upload or pick the
+    OCR folder first (preview step)." and the student had to re-pick the whole
+    folder. sessions.py:450-453 states the rule for the same shape of check:
+    reject before destroying staging that was already there.
+
+    Staging is cleared on the success path only, once the graded copies are
+    safely in the run directory."""
+    from dpi_eval import sessions as sess
+
+    client, sid = session_with_gt
+    preview = client.post(
+        f"/transcribe/sessions/{sid}/grade/preview",
+        data={"token": "tok", "ocr_folder": ""},
+        files=[("ocr_files", ("page_0.txt", b"hello world\n"))])
+    assert preview.status_code == 200
+    staging = sess.session_dir(sess.transcriptions_root(tmp_path), sid) / "staging"
+    assert (staging / "ocr" / "page_0.txt").is_file()
+
+    rejected = client.post(f"/transcribe/sessions/{sid}/grade/confirm",
+                           data={"token": "tok",
+                                 "override_page_0": "../../secret.txt"})
+    assert rejected.status_code == 400
+    assert "not a plain filename" in rejected.text
+    # The upload the error message points at survives, so the fix is one form
+    # field away rather than a whole re-pick.
+    assert (staging / "ocr" / "page_0.txt").is_file()
+
+    retry = client.post(f"/transcribe/sessions/{sid}/grade/confirm",
+                        data={"token": "tok"}, follow_redirects=False)
+    assert retry.status_code == 303, retry.text
+    assert retry.headers["location"].startswith("/runs/run-")
+    # Success is the moment staging stops being needed: the graded gt/ocr
+    # copies now live in the run directory.
+    assert not staging.exists()
+
+
 def test_clone_creates_other_arm_with_same_selection(session_with_gt):
     client, sid = session_with_gt
     response = client.post(f"/transcribe/sessions/{sid}/clone", data={"token": "tok"},

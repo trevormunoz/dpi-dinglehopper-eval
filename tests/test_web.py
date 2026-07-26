@@ -155,6 +155,80 @@ def test_hidden_files_are_ignored_not_collided(tmp_path):
     assert not (run_dir / "ocr" / ".DS_Store").exists()
 
 
+def test_upload_whose_basename_is_empty_is_dropped_not_written(tmp_path):
+    """R2-S6: `Path(name).name` is "" for "." and "/" (".." keeps ".." and was
+    already caught), and the hidden-file guard tested only `startswith(".")` —
+    so the empty basename survived and `_save` did `(dest / "").write_bytes(...)`,
+    i.e. wrote to the directory itself. That raised IsADirectoryError *after*
+    run-001/gt had been populated."""
+    from dpi_eval.web import _real_uploads
+
+    class _Named:
+        def __init__(self, filename):
+            self.filename = filename
+
+    kept = [u.filename for u in _real_uploads(
+        [_Named("/"), _Named("."), _Named(".."), _Named("sub/.."),
+         _Named(".DS_Store"), _Named("page_0.txt")])]
+    assert kept == ["page_0.txt"]
+
+    client = make_client(tmp_path)
+    gt, ocr = _fixture_pair()
+    resp = client.post(
+        "/grade",
+        files=[
+            ("gt_files", ("page_0.gt.txt", gt, "text/plain")),
+            ("ocr_files", ("page_0.txt", ocr, "text/plain")),
+            ("ocr_files", ("/", b"junk", "application/octet-stream")),
+        ],
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303  # the junk part is ignored, the pair grades
+    run_dir = tmp_path / "runs" / "run-001"
+    assert sorted(p.name for p in (run_dir / "ocr").iterdir()) == ["page_0.txt"]
+
+
+def test_a_filename_the_os_refuses_leaves_no_half_written_run(tmp_path):
+    """R2-S6, the other half: a name the OS itself rejects (over NAME_MAX)
+    still fails mid-`_save`, and the run directory it had already populated
+    stayed behind — a 500 traceback plus a run-NNN that /runs/{id} can only
+    404 on, and that shifts the numbering of every later run. Roll it back and
+    answer the way every other pre-grade rejection does."""
+    client = make_client(tmp_path)
+    gt, ocr = _fixture_pair()
+    resp = client.post(
+        "/grade",
+        files=[
+            ("gt_files", ("page_0.gt.txt", gt, "text/plain")),
+            ("ocr_files", ("page_0.txt", ocr, "text/plain")),
+            ("ocr_files", ("x" * 300 + ".txt", b"junk", "text/plain")),
+        ],
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert not list((tmp_path / "runs").glob("run-*"))
+
+
+def test_wrapped_report_refuses_a_symlinked_report(tmp_path):
+    """`_report_file`'s containment re-check had no test of its own: the name
+    pattern and the `is_file()` check each caught every shape the other tests
+    exercise, so deleting the re-check left all 263 green (PAR round 2, minor).
+    A symlink is the one shape only the re-check catches — the name is a plain
+    report stem and `is_file()` is True, but it resolves outside reports_dir."""
+    from dpi_eval.web import _report_file
+
+    client = make_client(tmp_path)
+    run = _run_with_report(tmp_path, "page_0")
+    secret = tmp_path / "secret.html"
+    secret.write_text("<html><body>SECRET</body></html>", encoding="utf-8")
+    (run / "reports" / "leak.html").symlink_to(secret)
+
+    assert _report_file(run / "reports", "leak") is None
+    resp = client.get("/runs/run-001/reports/leak")
+    assert resp.status_code == 404
+    assert "SECRET" not in resp.text
+
+
 def test_partial_failure_shows_banner_and_names_pages(tmp_path):
     """Display-contract test: render a run whose engine verdict recorded
     one failed and one skipped page. The run dir is written directly

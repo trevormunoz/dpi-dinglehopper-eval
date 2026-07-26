@@ -1,3 +1,4 @@
+import io
 import os
 from pathlib import Path
 
@@ -5,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dpi_eval.web import _check_token, _run_and_register, create_app
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, UploadFile
 
 
 def _request(headers: dict) -> Request:
@@ -43,6 +44,59 @@ def test_non_ascii_form_token_is_a_403_not_a_traceback(tmp_path, monkeypatch):
     response = client.post(
         "/transcribe/sessions",
         data={"token": "sekrét", "source_type": "local", "folder": "/nope"})
+    assert response.status_code == 403
+
+
+def test_check_token_denies_every_non_string_supplied_shape(monkeypatch):
+    """R2-S1: the S12 fix handled a non-ASCII `str` and nothing else.
+    `form.get("token")` returns an UploadFile when `token` arrives as a file
+    part, and an UploadFile has no `.encode` — so the gate raised instead of
+    denying. A gate that raises is not a gate: every shape must 403."""
+    monkeypatch.setenv("DPI_EVAL_TOKEN", "sekrit")
+    shapes = [
+        UploadFile(filename="token", file=io.BytesIO(b"sekrit")),
+        b"sekrit",
+        bytearray(b"sekrit"),
+        12345,
+        ["sekrit"],
+        {"token": "sekrit"},
+        object(),
+    ]
+    for shape in shapes:
+        with pytest.raises(HTTPException) as exc:
+            _check_token(_request({}), form_token=shape)
+        assert exc.value.status_code == 403, shape
+
+
+def _token_file_part():
+    """A `token` form field delivered as a *file* part — CORS-safelisted,
+    so any page can send it with no preflight."""
+    return [("token", ("token.txt", b"sekrit", "text/plain"))]
+
+
+@pytest.mark.parametrize("path,fields", [
+    ("/grade", {}),
+    ("/grade-paths", {}),
+    # source_type is the one required non-token field on any of these routes;
+    # it is supplied so the token's shape is the only thing wrong here.
+    ("/transcribe/sessions", {"source_type": "local"}),
+    ("/transcribe/sessions/s-nope/confirm", {}),
+    ("/transcribe/sessions/s-nope/pages/0", {}),
+    ("/transcribe/sessions/s-nope/grade/preview", {}),
+    ("/transcribe/sessions/s-nope/grade/confirm", {}),
+    ("/transcribe/sessions/s-nope/clone", {}),
+    ("/transcribe/sessions/s-nope/export", {}),
+])
+def test_every_mutating_route_403s_a_file_part_token(
+        path, fields, tmp_path, monkeypatch):
+    """R2-S1, end to end over all nine mutating routes enumerated from web.py's
+    own decorators. Before the fix the three `form.get("token")` routes answered
+    500 (AttributeError: 'UploadFile' object has no attribute 'encode') and the
+    `Form`-typed ones answered 422 from pydantic without the gate ever running.
+    The token check is what must deny, and it denies 403."""
+    monkeypatch.setenv("DPI_EVAL_TOKEN", "sekrit")
+    client = TestClient(create_app(tmp_path), raise_server_exceptions=False)
+    response = client.post(path, data=fields, files=_token_file_part())
     assert response.status_code == 403
 
 
