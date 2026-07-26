@@ -343,6 +343,65 @@ def test_results_summary_failure_does_not_claim_pages_failed():
     assert "Download reports (.zip)" in page
 
 
+def test_results_reports_failed_pages_and_a_failed_rollup_together():
+    """R2-S9: run_batch returns 1 for summary_error *before* it evaluates the
+    failure rate (runner.py:123-126), so both conditions genuinely co-occur.
+    The rollup notice used to come first and swallow the other, telling a
+    reader that the pages graded normally while half of them had failed."""
+    page = _graded_results_page(
+        exit_code=1,
+        succeeded=[f"page_{i}" for i in range(5)],
+        failed=[f"page_{i}" for i in range(5, 10)],
+        summary={},
+        page_metrics={},
+        summary_error="dinglehopper-summarize: boom")
+    assert "The pages graded normally" not in page
+    assert "5 of 10 pages failed to grade" in page
+    assert "batch summary" in page
+
+
+def test_results_rollup_failure_alone_still_says_the_pages_graded_normally():
+    """The reassurance is a claim about the pages, so it stays available in
+    the state that earns it — every page graded, only the rollup failed."""
+    page = _graded_results_page(exit_code=1, summary={},
+                                summary_error="dinglehopper-summarize: boom")
+    assert "The pages graded normally" in page
+
+
+def test_results_wont_claim_too_many_failed_when_the_rollup_forced_exit_1():
+    """1 failure in 10 is inside run_batch's 20% tolerance, so exit code 1
+    here is the rollup's doing and is no evidence about the failure rate.
+    Asserting a threshold breach we cannot see would be a second wrong
+    verdict — report the count instead."""
+    page = _graded_results_page(
+        exit_code=1,
+        succeeded=[f"page_{i}" for i in range(9)],
+        failed=["page_9"],
+        summary={},
+        page_metrics={},
+        summary_error="dinglehopper-summarize: boom")
+    assert "Too many pages failed" not in page
+    assert "1 of 10 pages failed to grade" in page
+
+
+def test_results_too_many_failed_verdict_kept_when_the_rate_forced_exit_1():
+    """With a good rollup, exit code 1 plus a partial success can only mean
+    run_batch crossed the failure-rate threshold (runner.py:127), so the
+    verdict wording is earned. tests/test_web.py:255 depends on it."""
+    page = pages.results_page("run-001", ["page_0"], ["page_1"], [], 1)
+    assert "Too many pages failed (1 of 2)" in page
+
+
+def test_results_nonzero_exit_with_nothing_to_blame_still_warns():
+    """/runs/{id} replays result.json from disk, so a run record whose exit
+    code names no cause must not render as a clean run — and must not invent
+    'Too many pages failed (0 of 1)' either."""
+    page = _graded_results_page(exit_code=1)
+    assert 'class="verdict"' not in page
+    assert "Too many pages failed" not in page
+    assert "finished with errors" in page
+
+
 def test_view_diff_link_percent_encodes_the_stem():
     """S17's other half: a stem is a filename, so `#` in one truncated the
     href into a fragment and the link pointed at the results page itself."""
@@ -763,6 +822,53 @@ def test_clone_button_names_the_arm_it_will_create():
         _saved_session(), [], "tok")
     assert "Type from scratch" in pages.session_page(
         _corrected_session(), [], "tok")
+
+
+def test_error_page_still_defaults_to_the_grading_context():
+    """Most callers are the grading pipeline, so the default is unchanged and
+    existing positional calls keep working."""
+    page = pages.error_page("Nope.")
+    assert "<h1>Can't grade this batch</h1>" in page
+    assert '<a href="/">Back to the form</a>' in page
+
+
+def test_error_page_takes_a_heading_and_an_exit_link():
+    page = pages.error_page(
+        "Nope.", (), "Can't do that in this session",
+        "/transcribe/sessions/s-1", "Back to the session")
+    assert "<h1>Can't do that in this session</h1>" in page
+    assert "Can't grade this batch" not in page
+    assert '<a href="/transcribe/sessions/s-1">Back to the session</a>' in page
+    assert '<a href="/">Back to the form</a>' not in page
+
+
+def test_session_error_context_links_back_to_the_session():
+    """R2-S10: error_page is the error surface for the transcription arm as
+    well — confirm, editor, editor_action, clone, export, preview. A session
+    error rendered under the grading form's heading, with the grading form as
+    its only exit, sends the student somewhere they were not."""
+    page = pages.error_page("Nope.", **pages.transcribe_error_context("s-1"))
+    assert "Can't grade this batch" not in page
+    assert '<a href="/transcribe/sessions/s-1">Back to the session</a>' in page
+
+
+def test_transcribe_error_context_without_a_session_points_at_transcribe():
+    """Session creation fails before there is a session to go back to."""
+    page = pages.error_page("Nope.", **pages.transcribe_error_context())
+    assert "Can't grade this batch" not in page
+    assert '<a href="/transcribe">Back to transcription</a>' in page
+
+
+def test_transcribe_error_context_percent_encodes_the_session_id():
+    """The sid arrives from a URL path and is echoed into an href."""
+    assert pages.transcribe_error_context("a b/c")["back_href"] == (
+        "/transcribe/sessions/a%20b%2Fc")
+
+
+def test_error_page_escapes_the_exit_link_and_label():
+    page = pages.error_page("Nope.", (), "H", '/x"><script>', "L&L")
+    assert "<script>" not in page
+    assert "L&amp;L" in page
 
 
 def test_transcription_picker_has_no_iframe():

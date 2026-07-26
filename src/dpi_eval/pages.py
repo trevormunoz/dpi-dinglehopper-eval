@@ -504,24 +504,56 @@ def results_page(
             "every page — check that the OCR files open correctly, or "
             "show this page to a supervisor.</p></div>"
         )
-    elif summary_error:
-        # A failed batch rollup forces exit code 1 (runner.py:123) even when
-        # every page graded, so the failure-rate wording below would read
-        # "Too many pages failed (0 of 1)".
-        sections.append(
-            '<div class="notice notice-warn"><p>The pages graded normally, '
-            "but the batch summary — the roll-up that averages every page — "
-            "could not be produced, so this run has no batch score. The "
-            "per-page scores below are still valid. Show this page to a "
-            "supervisor.</p></div>"
-        )
     else:
-        sections.append(
-            '<div class="notice notice-warn"><p>Too many pages failed '
-            f"({len(failed)} of {len(failed) + len(succeeded)}). The results "
-            "below are incomplete — a supervisor should look at this "
-            "batch.</p></div>"
-        )
+        # R2-S9: failed pages and a failed rollup are independent problems and
+        # they co-occur — run_batch returns 1 for summary_error *before* it
+        # evaluates the failure rate (runner.py:123-126). These used to be
+        # elif branches, so a batch with half its pages failing and a failed
+        # rollup rendered "The pages graded normally" and nothing else. Each
+        # condition gets its own notice; neither may suppress the other.
+        graded = len(failed) + len(succeeded)
+        if failed and not summary_error:
+            # A good rollup plus exit code 1 plus a partial success can only
+            # mean run_batch crossed the failure-rate threshold
+            # (runner.py:127), so the verdict wording is earned here.
+            sections.append(
+                '<div class="notice notice-warn"><p>Too many pages failed '
+                f"({len(failed)} of {graded}). The results below are "
+                "incomplete — a supervisor should look at this batch."
+                "</p></div>"
+            )
+        elif failed:
+            # The rollup alone forced exit code 1, so the exit code says
+            # nothing about the failure rate — 1 of 10 is inside the 20%
+            # tolerance. pages.py does not know the threshold, so it reports
+            # the count rather than a verdict it cannot support.
+            sections.append(
+                '<div class="notice notice-warn"><p>'
+                f"{len(failed)} of {graded} pages failed to grade. The "
+                "results below are incomplete — a supervisor should look at "
+                "this batch.</p></div>"
+            )
+        if summary_error:
+            # "The pages graded normally" is a claim about the pages, so it is
+            # only available when none of them failed.
+            lead = ("The pages graded normally, but the batch summary"
+                    if not failed else "The batch summary")
+            sections.append(
+                f'<div class="notice notice-warn"><p>{lead} — the roll-up '
+                "that averages every page — could not be produced, so this "
+                "run has no batch score. The per-page scores below are still "
+                "valid. Show this page to a supervisor.</p></div>"
+            )
+        if not failed and not summary_error:
+            # Unreachable from run_batch, which needs one of the two to return
+            # 1 — but /runs/{id} replays result.json from disk, so a run
+            # record that names no cause must still not read as a clean run.
+            sections.append(
+                '<div class="notice notice-warn"><p>This run finished with '
+                "errors, but the run record does not say which pages or which "
+                "step. The per-page scores below may be incomplete — show "
+                "this page to a supervisor.</p></div>"
+            )
     if succeeded:
         sections.append(
             _scores_section(run, succeeded, summary, page_metrics)
@@ -741,15 +773,56 @@ def report_page(run_id: str, name: str, inner_html: str) -> str:
     return _document(f"dpi-eval — {name}", body)
 
 
-def error_page(message: str, details: tuple[str, ...] = ()) -> str:
+def error_page(
+    message: str,
+    details: tuple[str, ...] = (),
+    heading: str = "Can't grade this batch",
+    back_href: str = "/",
+    back_label: str = "Back to the form",
+) -> str:
+    """The shared error surface. The heading and the exit link are arguments
+    because this page serves both arms: the defaults are the grading form's,
+    and a transcription caller passes transcribe_error_context() instead.
+    """
     items = "".join(f"<li><code>{escape(d)}</code></li>" for d in details)
     detail_html = f"<ul>{items}</ul>" if items else ""
     body = (
-        "<h1>Can't grade this batch</h1>"
+        # quote=False on the two text nodes: an apostrophe needs no escaping
+        # outside an attribute, and "Can&#x27;t grade this batch" in the source
+        # is a needless surprise for anyone reading the rendered page.
+        f"<h1>{escape(heading, quote=False)}</h1>"
         f'<div class="error"><p>{escape(message)}</p>{detail_html}</div>'
-        '<p><a href="/">Back to the form</a></p>'
+        f'<p><a href="{escape(back_href, quote=True)}">'
+        f"{escape(back_label, quote=False)}</a></p>"
     )
     return _document("dpi-eval — problem", body)
+
+
+def transcribe_error_context(session_id: str | None = None) -> dict[str, str]:
+    """error_page kwargs for an error raised on the transcription side.
+
+    R2-S10: error_page defaults to the grading form because most of its
+    callers are the grading pipeline, but it is also the error surface for
+    confirm, editor, editor_action, clone, export and grade preview. Rendered
+    with those defaults, a session error appeared under "Can't grade this
+    batch" and offered only a link to the grading form — so the clone error
+    that says "Go back, choose the draft folder" had no link that reached it.
+    """
+    if session_id:
+        return {
+            "heading": "Can't do that in this session",
+            # The sid arrives from a URL path and goes straight back into an
+            # href, so encode the whole thing as one segment (see _url_path).
+            "back_href": f"/transcribe/sessions/{quote(session_id, safe='')}",
+            "back_label": "Back to the session",
+        }
+    # No session to go back to: either creating one failed, or the sid in the
+    # URL names nothing. The transcription home page lists the real ones.
+    return {
+        "heading": "Can't open this transcription session",
+        "back_href": "/transcribe",
+        "back_label": "Back to transcription",
+    }
 
 
 def _hidden_token(token: str) -> str:

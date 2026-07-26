@@ -94,12 +94,24 @@
       shimmer.hidden = !installing;
     }
 
-    var tauri = window.__TAURI__;
-    if (tauri && tauri.event && tauri.event.listen) {
-      tauri.event.listen('bootstrap-status', function (e) {
-        render(String(e.payload));
-      });
-    }
+    // The injected Tauri global is touched only inside the load handler:
+    // init-script ordering has raced page scripts before (tauri#12990), and
+    // this script runs at parse time. Losing that race costs the install —
+    // bootstrap-status is never subscribed and this window sits silent for
+    // minutes. Same rule as pages.py's _PICKER_SCRIPT; do not hoist the probe.
+    //
+    // Subscribing at load can miss a status emitted before then, which is why
+    // the static markup above already reads as the 'installing' state. The
+    // events that matter — 'ready' and 'failed: …' — land after the install,
+    // long past load.
+    window.addEventListener('load', function () {
+      var tauri = window.__TAURI__;
+      if (tauri && tauri.event && tauri.event.listen) {
+        tauri.event.listen('bootstrap-status', function (e) {
+          render(String(e.payload));
+        });
+      }
+    });
   })();
 </script>
 </body>
