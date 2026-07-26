@@ -831,7 +831,17 @@ def _hidden_token(token: str) -> str:
 
 def _safe_url(url: str) -> str:
     """Escape an externally sourced URL for an attribute, and refuse
-    non-http(s) schemes outright (manifest values are untrusted)."""
+    non-http(s) schemes outright (manifest values are untrusted).
+
+    The isinstance check is not redundant with the parser's own id typing:
+    `url: str` is an annotation, not a runtime check, and a session.json
+    written before that guard existed still holds whatever its manifest had.
+    Nothing rewrites those files, so a dict there faulted `.startswith()` and
+    left the session permanently un-openable — degrading to no image keeps the
+    transcription and the export reachable.
+    """
+    if not isinstance(url, str):
+        return ""
     if not url or not url.startswith(("https://", "http://", "/")):
         return ""
     return escape(url, quote=True)

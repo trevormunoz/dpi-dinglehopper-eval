@@ -106,6 +106,39 @@ def test_editor_page_refuses_javascript_scheme_image_url(tmp_path):
     assert "javascript:" not in html_out
 
 
+def test_editor_page_survives_a_session_saved_before_the_id_type_guard(tmp_path):
+    """R2-C1 leftover: the parser now guarantees `image_url` is a str, but a
+    session.json written before that fix still carries whatever the manifest
+    had. `_safe_url`'s `url: str` is an annotation, not a runtime check, so a
+    dict reached `.startswith()` and the editor 500ed with no way for the user
+    to recover — nothing in the app rewrites that file."""
+    import json
+
+    from dpi_eval import pages, sessions as sess
+    from dpi_eval.iiif import CanvasRecord
+
+    root = sess.transcriptions_root(tmp_path)
+    records = [CanvasRecord(
+        "https://x/c/0", "Page 0", "https://x/i/0.jpg", None)]
+    session = sess.create_iiif_session(
+        root, "https://x/m", records, "from_scratch", "")
+    sess.confirm_session(root, session["id"], [0])
+    # Simulate the pre-fix file: hand-edit the id back to the dict shape that
+    # parse_manifest would now reject outright.
+    path = sess.session_dir(root, session["id"]) / "session.json"
+    on_disk = json.loads(path.read_text())
+    on_disk["pages"][0]["image_url"] = {"@id": "https://x/i/0.jpg"}
+    path.write_text(json.dumps(on_disk))
+
+    session = sess.load_session(root, session["id"])
+    page = session["pages"][0]
+    html_out = pages.editor_page(session, page, "", "", "tok", "Page 1 of 1")
+    # Degrades to no image rather than faulting; the page still opens so the
+    # transcription and the export are reachable.
+    assert "<h1>" in html_out
+    assert "@id" not in html_out
+
+
 def test_image_info_returns_json_500_for_corrupt_master(setup):
     client, sid, folder = setup
     (folder / "a.tif").write_bytes(b"junk not an image")
