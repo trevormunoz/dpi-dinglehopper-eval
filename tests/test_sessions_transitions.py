@@ -90,6 +90,67 @@ def test_resolve_attention_adopt_and_discard(active_session):
     assert not orphan.exists()
 
 
+def test_concurrent_mutations_do_not_lose_an_update(active_session):
+    """PAR S15. Every mutator did load -> mutate whole dict -> save, and
+    the routes are `def`, so FastAPI runs them in a threadpool: two real
+    in-flight requests interleaved and the loser's whole record —
+    including `seconds_elapsed`/`seconds_active`, the pilot's actual
+    measurement — was silently discarded.
+
+    The interleave is forced from the reader side: a hook fires inside
+    the saving thread right after it loads and waits for the main thread
+    to finish a `set_flag` on the other page. Unlocked, the waiter always
+    resumes and clobbers the flag. Locked, the main thread cannot even
+    load until the save completes, so the hook's wait times out (that is
+    the point: the interleave becomes unreachable) and both writes
+    survive. The 2s bound is generous relative to two local JSON writes,
+    so the pre-fix failure is deterministic; the post-fix pass costs
+    2 seconds of waiting.
+    """
+    import threading
+    from dpi_eval import sessions as sessions_mod
+
+    loaded = threading.Event()
+    real_load = sessions_mod.load_session
+    saver = threading.current_thread()
+    errors: list[BaseException] = []
+
+    def hooked_load(root_, sid_):
+        session = real_load(root_, sid_)
+        if threading.current_thread() is saver and not loaded.is_set():
+            loaded.set()
+            other_done.wait(timeout=2.0)
+        return session
+
+    other_done = threading.Event()
+    root, sid = active_session
+
+    def do_save():
+        nonlocal saver
+        saver = threading.current_thread()
+        try:
+            save_page(root, sid, 0, "typed\n", elapsed=30, active=20, nonce="n1")
+        except BaseException as exc:  # surfaced in the main thread below
+            errors.append(exc)
+        finally:
+            loaded.set()
+
+    thread = threading.Thread(target=do_save)
+    import unittest.mock as mock
+    with mock.patch.object(sessions_mod, "load_session", hooked_load):
+        thread.start()
+        assert loaded.wait(timeout=5.0), "saving thread never loaded"
+        set_flag(root, sid, 1, True, "unsure about ligature")
+        other_done.set()
+        thread.join(timeout=15.0)
+    assert not thread.is_alive()
+    assert not errors, errors
+
+    final = load_session(root, sid)
+    assert page_by_index(final, 0)["seconds_elapsed"] == 30, "timing was lost"
+    assert page_by_index(final, 1)["flagged"] is True, "flag was lost"
+
+
 def test_version_mismatch_makes_session_read_only(active_session):
     root, sid = active_session
     session = load_session(root, sid)

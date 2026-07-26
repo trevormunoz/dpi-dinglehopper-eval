@@ -131,6 +131,23 @@ def test_stage_for_grade_rejects_override_pointing_at_ground_truth(iiif_session)
         stage_for_grade(root, sid, {"p0000-page-0": "../../gt/p0000-page-0.gt.txt"})
 
 
+def test_stage_ocr_rejects_colliding_basenames(iiif_session):
+    """PAR S5. Callers pass paths relative to the picked folder, so
+    `batch-a/page_0.txt` and `batch-b/page_0.txt` both flattened to
+    `page_0.txt`; one silently won and was graded against the other's
+    ground truth. `_grade_pipeline` already refuses this shape."""
+    root, sid = iiif_session
+    stage_ocr(root, sid, [("page_0.txt", b"first pass")])
+    survivor = session_dir(root, sid) / "staging" / "ocr" / "page_0.txt"
+    with pytest.raises(SessionError) as excinfo:
+        stage_ocr(root, sid, [
+            ("batch-a/page_0.txt", b"a"), ("batch-b/page_0.txt", b"b")])
+    message = excinfo.value.message
+    assert "batch-a/page_0.txt" in message and "batch-b/page_0.txt" in message
+    # Rejected before any write: earlier staging is not destroyed.
+    assert survivor.read_bytes() == b"first pass"
+
+
 def test_export_flattens_hostile_collection_label(tmp_path):
     root = transcriptions_root(tmp_path)
     records = [CanvasRecord(

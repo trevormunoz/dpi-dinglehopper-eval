@@ -11,7 +11,10 @@ import os
 import re
 import secrets
 import shutil
+import threading
+import time
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -57,6 +60,89 @@ def save_session(root: Path, session: dict) -> None:
     tmp = target.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(session, indent=2), encoding="utf-8")
     os.replace(tmp, target)
+
+
+LOCK_TIMEOUT = 10.0
+LOCK_STALE_AFTER = 60.0
+_LOCK_POLL = 0.01
+_held_locks = threading.local()
+
+
+@contextmanager
+def session_lock(root: Path, session_id: str):
+    """Serialize one session's read-modify-write of session.json.
+
+    `save_session` is atomic (os.replace), which prevents a torn file but
+    not a lost update: every mutator loads the whole record, edits it and
+    writes it back, and the routes are plain `def`, so FastAPI runs them
+    in a threadpool and two requests (two editor tabs, or a flag submit
+    racing a save) genuinely interleave. The loser's entire record used
+    to be discarded, including seconds_elapsed/seconds_active — the
+    pilot's measurement, recorded and shown to the student and then
+    silently dropped.
+
+    The lock is an O_CREAT|O_EXCL lock file, not fcntl/msvcrt: those are
+    per-platform, this ships on macOS and Windows, and no dependency may
+    be added (every wheel has to be bundled for offline lab installs).
+    It therefore covers threads and separate processes alike, and is held
+    across the whole load-mutate-save window, not just the write.
+
+    Re-entrant per thread, so a mutator that calls another locked helper
+    cannot self-deadlock. Only ever one lock path per session, so no
+    lock-ordering cycle between sessions is possible.
+    """
+    directory = session_dir(root, session_id)
+    key = str(directory)
+    depths = getattr(_held_locks, "depths", None)
+    if depths is None:
+        depths = _held_locks.depths = {}
+    if depths.get(key):
+        depths[key] += 1
+        try:
+            yield
+        finally:
+            depths[key] -= 1
+        return
+
+    path = directory / "session.lock"
+    directory.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + LOCK_TIMEOUT
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            # A crash can leave the file behind; a session that stays
+            # locked forever would be worse than the race.
+            try:
+                age = time.time() - path.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            if age > LOCK_STALE_AFTER:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            if time.monotonic() >= deadline:
+                raise SessionError(
+                    "Another change to this session is still in progress. "
+                    "Wait a moment and try again — your text is still in "
+                    "the editor.")
+            time.sleep(_LOCK_POLL)
+    try:
+        os.write(fd, str(os.getpid()).encode("ascii"))
+    finally:
+        os.close(fd)
+    depths[key] = 1
+    try:
+        yield
+    finally:
+        depths[key] = 0
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def load_session(root: Path, session_id: str) -> dict:
@@ -181,20 +267,35 @@ def create_iiif_session(
 
 
 def confirm_session(root: Path, session_id: str, selected_indices: list[int]) -> dict:
-    session = load_session(root, session_id)
-    if session["state"] != "draft":
-        raise SessionError("Session is already confirmed.")
-    if not selected_indices:
-        raise SessionError("Select at least one page.")
-    keep = set(selected_indices)
-    session["pages"] = [p for p in session["pages"] if p["source_index"] in keep]
-    session["state"] = "active"
-    # gt/ is part of an active session's directory shape from the start,
-    # so crash-recovery scenarios (orphan GT files) can be detected even
-    # before the first save_page.
-    (session_dir(root, session_id) / "gt").mkdir(parents=True, exist_ok=True)
-    save_session(root, session)
-    return session
+    with session_lock(root, session_id):
+        session = load_session(root, session_id)
+        if session["state"] != "draft":
+            raise SessionError("Session is already confirmed.")
+        if not selected_indices:
+            raise SessionError("Select at least one page.")
+        known = {p["source_index"] for p in session["pages"]}
+        unknown = sorted(set(selected_indices) - known)
+        if unknown:
+            # The selection arrives from a checkbox form, so an index with
+            # no page means the client and the server disagree about the
+            # page set. Confirming the intersection would silently drop
+            # pages the student ticked and, if nothing matched, activate a
+            # session with pages: [] that exports as an empty bundle.
+            # Fail the whole request and name the offenders instead.
+            listed = ", ".join(str(i) for i in unknown)
+            raise SessionError(
+                f"This session has no page {listed}. The page list on your "
+                "screen no longer matches the session — reload the page and "
+                "choose again.")
+        keep = set(selected_indices)
+        session["pages"] = [p for p in session["pages"] if p["source_index"] in keep]
+        session["state"] = "active"
+        # gt/ is part of an active session's directory shape from the start,
+        # so crash-recovery scenarios (orphan GT files) can be detected even
+        # before the first save_page.
+        (session_dir(root, session_id) / "gt").mkdir(parents=True, exist_ok=True)
+        save_session(root, session)
+        return session
 
 
 NO_TEXT_REASONS = ("blank", "image_only", "illegible")
@@ -233,53 +334,56 @@ def save_page(
     root: Path, session_id: str, source_index: int, text: str,
     *, elapsed: int, active: int, nonce: str,
 ) -> tuple[dict, int]:
-    session = _mutable(root, session_id)
-    page = page_by_index(session, source_index)
-    normalized, changes = normalize(text)
-    if not normalized.strip():
-        raise SessionError(
-            'The transcription is empty — use "No text on this page" instead.')
-    # Write order is fixed (spec): GT file first, session.json second.
-    target = gt_path(root, session, page)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(".tmp")
-    tmp.write_text(normalized, encoding="utf-8")
-    os.replace(tmp, target)
-    page["status"] = "saved"
-    page["no_text_reason"] = None
-    page["saved_at"] = _now()
-    if nonce != page.get("last_nonce"):
-        page["seconds_elapsed"] += max(0, int(elapsed))
-        page["seconds_active"] += max(0, int(active))
-        page["last_nonce"] = nonce
-    save_session(root, session)
-    return session, changes
+    with session_lock(root, session_id):
+        session = _mutable(root, session_id)
+        page = page_by_index(session, source_index)
+        normalized, changes = normalize(text)
+        if not normalized.strip():
+            raise SessionError(
+                'The transcription is empty — use "No text on this page" instead.')
+        # Write order is fixed (spec): GT file first, session.json second.
+        target = gt_path(root, session, page)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(normalized, encoding="utf-8")
+        os.replace(tmp, target)
+        page["status"] = "saved"
+        page["no_text_reason"] = None
+        page["saved_at"] = _now()
+        if nonce != page.get("last_nonce"):
+            page["seconds_elapsed"] += max(0, int(elapsed))
+            page["seconds_active"] += max(0, int(active))
+            page["last_nonce"] = nonce
+        save_session(root, session)
+        return session, changes
 
 
 def mark_no_text(root: Path, session_id: str, source_index: int, reason: str) -> dict:
     if reason not in NO_TEXT_REASONS:
         raise SessionError(
             "Pick why there is no text: blank, image-only, or illegible.")
-    session = _mutable(root, session_id)
-    page = page_by_index(session, source_index)
-    target = gt_path(root, session, page)
-    if target.exists():
-        target.unlink()  # a retracted page must never be graded
-    page["status"] = "no_text"
-    page["no_text_reason"] = reason
-    page["saved_at"] = _now()
-    save_session(root, session)
-    return session
+    with session_lock(root, session_id):
+        session = _mutable(root, session_id)
+        page = page_by_index(session, source_index)
+        target = gt_path(root, session, page)
+        if target.exists():
+            target.unlink()  # a retracted page must never be graded
+        page["status"] = "no_text"
+        page["no_text_reason"] = reason
+        page["saved_at"] = _now()
+        save_session(root, session)
+        return session
 
 
 def set_flag(root: Path, session_id: str, source_index: int,
              flagged: bool, note: str) -> dict:
-    session = _mutable(root, session_id)
-    page = page_by_index(session, source_index)
-    page["flagged"] = bool(flagged)
-    page["note"] = note.strip()
-    save_session(root, session)
-    return session
+    with session_lock(root, session_id):
+        session = _mutable(root, session_id)
+        page = page_by_index(session, source_index)
+        page["flagged"] = bool(flagged)
+        page["note"] = note.strip()
+        save_session(root, session)
+        return session
 
 
 def reconcile(root: Path, session: dict) -> list[dict]:
@@ -298,24 +402,25 @@ def reconcile(root: Path, session: dict) -> list[dict]:
 
 def resolve_attention(root: Path, session_id: str, source_index: int,
                       action: str) -> dict:
-    session = _mutable(root, session_id)
-    page = page_by_index(session, source_index)
-    target = gt_path(root, session, page)
-    if action == "adopt":
-        if not target.exists():
-            raise SessionError("Nothing on disk to adopt for that page.")
-        page["status"] = "saved"
-        page["no_text_reason"] = None
-        page["saved_at"] = _now()
-    elif action == "discard":
-        if target.exists():
-            target.unlink()
-        page["status"] = "pending"
-        page["saved_at"] = None
-    else:
-        raise SessionError("Resolve with adopt or discard.")
-    save_session(root, session)
-    return session
+    with session_lock(root, session_id):
+        session = _mutable(root, session_id)
+        page = page_by_index(session, source_index)
+        target = gt_path(root, session, page)
+        if action == "adopt":
+            if not target.exists():
+                raise SessionError("Nothing on disk to adopt for that page.")
+            page["status"] = "saved"
+            page["no_text_reason"] = None
+            page["saved_at"] = _now()
+        elif action == "discard":
+            if target.exists():
+                target.unlink()
+            page["status"] = "pending"
+            page["saved_at"] = None
+        else:
+            raise SessionError("Resolve with adopt or discard.")
+        save_session(root, session)
+        return session
 
 
 def draft_text(session: dict, page: dict) -> str:
@@ -339,13 +444,31 @@ def clear_staging(root: Path, session_id: str) -> None:
 
 def stage_ocr(root: Path, session_id: str, files: list[tuple[str, bytes]]) -> dict:
     session = _mutable(root, session_id)
-    clear_staging(root, session_id)
-    ocr_dir = _staging(root, session_id) / "ocr"
-    ocr_dir.mkdir(parents=True)
+    # Names arrive relative to the picked folder, so `batch-a/page_0.txt`
+    # and `batch-b/page_0.txt` both flatten to `page_0.txt`: one silently
+    # won and was then graded against the other page's ground truth.
+    # _grade_pipeline refuses the same shape ("grading could silently use
+    # the wrong page"), and it rejects before writing anything — so do the
+    # check ahead of clear_staging, or a rejected upload would also
+    # destroy the staging that was already there.
+    kept: list[tuple[str, bytes]] = []
+    seen: dict[str, str] = {}
     for name, data in files:
         flat = Path(name).name
         if flat.startswith("."):
             continue
+        if flat in seen:
+            raise SessionError(
+                f"Two OCR files would end up with the same name "
+                f"({flat}), so grading could silently use the wrong page: "
+                f"{seen[flat]} and {name}. Flatten the folder or rename "
+                "these files, then try again.")
+        seen[flat] = name
+        kept.append((flat, data))
+    clear_staging(root, session_id)
+    ocr_dir = _staging(root, session_id) / "ocr"
+    ocr_dir.mkdir(parents=True)
+    for flat, data in kept:
         (ocr_dir / flat).write_bytes(data)
     by = "index" if session["source"]["type"] == "iiif" else "stem"
     result = align(session["pages"], [p.name for p in ocr_dir.iterdir()], by=by)

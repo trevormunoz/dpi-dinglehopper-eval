@@ -45,6 +45,22 @@ def test_confirm_prunes_to_selection_and_activates(root, image_folder):
     assert reloaded["collection"] == "diamondback"
 
 
+def test_confirm_rejects_index_matching_no_page(root, image_folder):
+    """PAR S13. `if not selected_indices` never checked that an index
+    matched a real page, so `pages=9999` activated a session with
+    `pages: []` — permanently unusable, and exportable as an empty
+    bundle. An unknown index means the form and the session disagree
+    about the page set, so the whole request fails rather than silently
+    confirming a smaller selection than the student ticked."""
+    session = create_local_session(root, image_folder, "from_scratch", "", None)
+    with pytest.raises(SessionError) as excinfo:
+        confirm_session(root, session["id"], [0, 9999])
+    assert "9999" in excinfo.value.message
+    reloaded = load_session(root, session["id"])
+    assert reloaded["state"] == "draft"
+    assert [p["stem"] for p in reloaded["pages"]] == ["scan-A", "scan-B"]
+
+
 def test_create_iiif_session_uses_canvas_records(root):
     records = [
         CanvasRecord("https://x/c/0", "Masthead", "https://x/i/0/full/max/0/default.jpg", "https://x/i/0"),
