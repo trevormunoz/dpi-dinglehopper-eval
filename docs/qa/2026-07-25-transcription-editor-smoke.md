@@ -99,25 +99,125 @@ after the fix and completed items 1–7.
 
 | # | Check | Result | Notes |
 |---|---|---|---|
-| 8 | `uv run dpi-eval-web`; IIIF session from a real UMD manifest (Presentation v2); transcribe one page from scratch; save; session page correct | **DEFERRED** | Not run — postponed by the tester at the end of the desktop pass. No manifest URL was supplied, so nothing was attempted and nothing is known either way. |
+| 8 | `uv run dpi-eval-web`; IIIF session from a real UMD manifest (Presentation v2); transcribe one page from scratch; save; session page correct | **PASS, with two findings** | Run 2026-07-26 in Chrome against a real third-party manifest. Ingest, indexing, save, timing and export all correct. Transcription is impractical on dense paged text (F9) and the active-timer records 0s for bulk-inserted text (F10). |
 
-### What deferring item 8 leaves unknown
+## Item 8 — run 2026-07-26
 
-Not blockers, but they are genuinely untested rather than assumed-fine:
+Deferred on 2026-07-25 for want of a manifest URL; run the next day against
+**UMD's own repository**, in a real browser (Chrome), not the desktop shell.
 
-1. **The whole IIIF path.** Manifest fetch (stdlib `urllib`), Presentation v2
-   parsing, and the image-less-canvas rejection guard.
-2. **A different alignment rule.** IIIF sessions pair OCR by *trailing
-   integer* against 0-based `source_index` (`alignment.py:39–42`), pinned to
-   `iiif_ocr`'s `page_{i}` naming — not the stem equality that item 6
-   exercised. The off-by-one risk lives here, not in the local path.
-3. **The browser-mode half of the picker fix.** With no `__TAURI__`, the
-   typed-path input must stay visible and functional. Unit tests cover the
-   markup; no browser has rendered it.
-4. **The controlled platform comparison.** F2, F5, F6 and F7 should reproduce
-   identically in a browser. Confirming that would settle empirically that
-   they are platform-independent rather than WKWebView symptoms — currently
-   that rests on reading the code.
+Target: *AFL-CIO Labor Studies Center, 1975* — 6 canvases, Presentation v2,
+from the AWR collection. A 1975 typescript, so genuinely dense paged text.
+Full target list and the search API that finds more:
+`docs/qa/item-8-iiif-targets.md`.
+
+```
+https://iiif.lib.umd.edu/manifests/fcrepo:dc:2023:1:b3:7f:3e:17:b37f3e17-f230-4da8-a472-e95584112ebd/manifest
+```
+
+### Prerequisite discovered before the run could start
+
+UMD fronts `iiif.lib.umd.edu` with a WAF that filters on `User-Agent`, so
+`fetch_manifest` could not reach any UMD manifest at all — item 8 would have
+died at the first request. Measured: `Mozilla/5.0 (Macintosh…)` → 200,
+`Python-urllib/3.11` → 400, an honest `dpi-eval/0.1.0` → **400**, no
+User-Agent → 403. Fixed by `DPI_EVAL_USER_AGENT` (`7791588`), which keeps the
+honest value as the default and makes the failure self-explaining, since the
+honest value is the one rejected.
+
+### What passed
+
+- **Manifest fetch and parse** — 6 canvases from a manifest neither we nor an
+  agent wrote. This is what most needed testing: R2-C1 and R2-S2 both lived in
+  this parser.
+- **Canvas indexing** — stems `p0000-page-1` … `p0005-page-6`; 0-based indices
+  against 1-based labels, which is precisely what R2-S2 was about.
+- **Selection as queue** — 2 of 6 ticked, and only those 2 appeared.
+- **Image loading in a real browser.** The page image loaded directly from
+  `iiif.lib.umd.edu` even though the Python-side fetch needed the override —
+  the predicted asymmetry (WKWebView/Chrome send their own browser UA for
+  `<img>`) held. Editor request `full/!1200,1200/0/default.jpg` → 922x1200
+  JPEG; service reports level2 at 3324x4324.
+- **Timing accumulates across visits.** `sessions.py:416-417` uses `+=`, so a
+  re-edit adds rather than replaces: 192s+32s elapsed, 0s+25s active. Both
+  columns visible on the session page — no silent telemetry.
+- **Export asymmetry.** `gt/` held only the saved page; `transcriptions.json`
+  covered both, page 2 as `pending`. UTF-8, LF, trailing newline. Each page
+  records its `canvas_id` (`/canvas/0`, `/canvas/1`) — the audit trail that
+  would have made an R2-S2 skew visible after the fact.
+- **Browser-mode picker.** The typed-path input stayed visible and usable with
+  no `__TAURI__` present, which unit tests asserted but no browser had shown.
+
+### F9 — no usable reading size for dense paged text (blocker for paged media)
+
+Two views, neither usable:
+
+| View | Delivered | Displayed | Problem |
+|---|---|---|---|
+| Inline pane | 922x1200 | ~315px wide | Too small to read |
+| Enlarge | 3324x4324 | 1:1, scroll only | Too big to navigate |
+
+`body { max-width: 44rem }` (`pages.py:24`) with a two-column split leaves the
+image ~315px, and the lightbox `<img>` (`pages.py:1147-1148`) has no
+`max-width`, so it renders at natural size inside a `95vw` dialog with
+`overflow:auto` — scroll-only at 1:1, landing on blank margin. Tester's words:
+*"Goes too big with only scroll controls not zoom. So not very practicable to
+use."*
+
+This **supersedes F6**, which logged the lightbox half as cosmetic polish. Same
+code, blocker severity, because the material changed: items 1–7 used synthetic
+fixtures whose text survived a 315px pane. Real archival typescript does not.
+
+The capability is already paid for — the IIIF Image API serves any region at
+any size and `derive.py` implements `regionByPx`. The tool requests one fixed
+size and then discards most of it.
+
+Two candidate fixes, not yet chosen: cap the lightbox image
+(`object-fit:contain`) and widen the inline pane; or adopt a zoom-and-pan
+viewer driven by the Image API, which is a build-vs-adopt decision.
+
+### F10 — the active-time metric measures keystroke count, not effort (high)
+
+`pages.py:1189-1195` accumulates only the *gap between consecutive* `input`
+events, guarded by `if (lastInput && …)`. N events yield N-1 intervals, so any
+edit completed in a **single** input event records **0s active** — and nothing
+distinguishes that from a page nobody touched. Observed directly: a pasted
+transcription saved as `192s elapsed / 0s active`; typing on the same page then
+added `32s / 25s`, confirming the tracker is fine for character-by-character
+input.
+
+Because timing accumulates, this is permanently lossy: the paste visit's
+elapsed seconds stay in the total while its active seconds never arrive, so the
+two columns describe different sets of visits for the same page. Any
+active-to-elapsed ratio — the natural way to read them together — is then wrong
+in the direction that makes the work look easier than it was.
+
+The consequence that matters for this project: **the metric under-reports for
+exactly the input methods the accessibility charter cares about.** Dictation,
+an IME, and assistive tech that inserts text in chunks all fire far fewer
+`input` events than typing. A student using a Japanese IME, where composition
+commits whole phrases, would show much lower "active" time than a QWERTY typist
+doing identical work — directly relevant to the Japanese-books CER flag.
+"Tell students not to paste" is not the fix; the metric should distinguish
+*pasted*, *dictated* and *untouched* instead of collapsing all three to 0s.
+
+### Data hygiene note
+
+The GT saved in this session must not be treated as pilot data. The first save
+was a paste of text the assistant had read off a screenshot; the tester then
+typed three lines themselves (visible in the export as `Leonard Lewis Jr.`,
+without the comma the assistant's reading had). Discard the session before any
+real collection.
+
+### Still not covered by item 8
+
+- **The IIIF OCR alignment rule.** Grading was not exercised: these documents
+  have vendor OCR upstream (`has_ocr` in the search API) but the tool does not
+  fetch it, and no OCR folder was supplied. Pairing by *trailing integer*
+  against 0-based `source_index` (`alignment.py:39-42`) therefore remains
+  untested against real IIIF material.
+- **The controlled platform comparison** for F5 and F7. F9's inline-pane half
+  did reproduce in Chrome, confirming it is not a WKWebView symptom.
 
 ## WKWebView verdict — the circuit-breaker did NOT trip
 
