@@ -2,7 +2,7 @@
 
 from pathlib import PureWindowsPath
 
-from dpi_eval.runner import run_page
+from dpi_eval.runner import run_page, summarize
 
 
 class _StubCompletedProcess:
@@ -71,3 +71,46 @@ def test_run_page_passes_differences_flag(tmp_path, monkeypatch):
         "--differences",
         "1",
     ]
+
+
+def test_run_page_passes_a_finite_timeout(tmp_path, monkeypatch):
+    """S14: a hung dinglehopper subprocess must not pin a threadpool worker
+    forever — run_page has to pass a numeric timeout= to subprocess.run."""
+    gt = PureWindowsPath("C:/Users/student/eval/gt/page_0.gt.txt")
+    ocr = PureWindowsPath("C:/Users/student/eval/ocr/page_0.txt")
+    reports_dir = tmp_path / "reports"
+
+    captured_kwargs = {}
+
+    def fake_run(argv, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _StubCompletedProcess(returncode=0)
+
+    monkeypatch.setattr("dpi_eval.runner.subprocess.run", fake_run)
+
+    run_page(gt, ocr, reports_dir, prefix="page_0")
+
+    timeout = captured_kwargs.get("timeout")
+    assert timeout is not None
+    assert isinstance(timeout, (int, float))
+    assert timeout > 0
+
+
+def test_summarize_passes_a_finite_timeout(tmp_path, monkeypatch):
+    """Same guard for dinglehopper-summarize (S14)."""
+    reports_dir = tmp_path / "reports"
+
+    captured_kwargs = {}
+
+    def fake_run(argv, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _StubCompletedProcess(returncode=0)
+
+    monkeypatch.setattr("dpi_eval.runner.subprocess.run", fake_run)
+
+    summarize(reports_dir)
+
+    timeout = captured_kwargs.get("timeout")
+    assert timeout is not None
+    assert isinstance(timeout, (int, float))
+    assert timeout > 0
