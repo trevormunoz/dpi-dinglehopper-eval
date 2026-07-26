@@ -155,9 +155,15 @@ run exercised all three areas and they held:
 Note too that the design has already absorbed the earlier lessons: the
 `ocr_folder` path field *permits* avoiding the webview boundary for OCR
 bytes (corrected, PAR E7: "never" was wrong — the same form also ships
-`<input type="file" name="ocr_files" multiple>` and `web.py:526–530`
-reads whichever arrives), and `remote-dialog` was written in advance for precisely the
-picker this run wired up.
+`<input type="file" name="ocr_files" multiple>`, and at the time of this
+smoke test `web.py:526–530` read whichever arrived), and `remote-dialog`
+was written in advance for precisely the picker this run wired up.
+**Since fixed:** as of round-2 review finding S4, `web.py:574–586` rejects
+the request with a 400 — "Two OCR sources arrived together" — when both
+the folder field and an upload are present, rather than silently picking
+one. (Line numbers per the committed HEAD at the time of this correction;
+a separate uncommitted edit in progress elsewhere in this file may shift
+them further.)
 
 One caveat: **F3 remains unexplained.** If its cause is WKWebView mangling
 typed text, that would be a genuine chrome finding, since it would implicate
@@ -543,10 +549,20 @@ identical but for one `# via` comment.
 ## Notes on expected (non-bug) behaviour
 
 - IIIF manifests whose canvases lack images are **rejected by design** —
-  though PAR review (S9) found a hole: a Presentation v3 `Choice` body is
-  unhandled, so `image_url` becomes `""` while the canvas still counts,
-  and the guard passes. The intent below stands; the guard is incomplete —
   protecting the 0-based alignment that `iiif_ocr`'s `page_{i}` naming
-  depends on. A rejection is correct behaviour, not a defect.
+  depends on. At the time of this smoke test, PAR review (S9) had found a
+  hole: a Presentation v3 `Choice` body was unhandled, so `image_url`
+  became `""` while the canvas still counted, and the guard passed anyway.
+  **That hole is fixed as of `2d75b05`** — `_resolve_v3_body` now unwraps
+  `Choice` and array bodies, and an empty resolved id is treated as "no
+  usable image" for every v2/v3 shape, so it routes through the existing
+  canvas-count guard (`tests/test_iiif.py::test_parse_rejects_manifest_with_empty_image_url_in_v3_body`
+  passes at HEAD). Round 2 then found a separate gap in the same guard — a
+  non-`Canvas` `items` entry was skipped *before* the counter incremented,
+  removing it from both sides of the comparison and skewing every later page
+  index. That is R2-S2, and it is also fixed: `parse_manifest` now raises
+  `IIIFError` for any `items` entry whose `type` is not exactly `Canvas`,
+  rather than skipping it. Neither gap is the hole this note originally
+  described.
 - Unmatched pages in the alignment preview are **not graded**; they count
   as neither pass nor failure.
