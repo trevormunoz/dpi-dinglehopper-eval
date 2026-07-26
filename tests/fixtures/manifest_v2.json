@@ -1,0 +1,14 @@
+{
+  "@context": "http://iiif.io/api/presentation/2/context.json",
+  "@id": "https://iiif.example.edu/m/1",
+  "@type": "sc:Manifest",
+  "sequences": [{"canvases": [
+    {"@id": "https://iiif.example.edu/c/0", "label": "Masthead",
+     "images": [{"resource": {
+       "@id": "https://iiif.example.edu/i/0/full/full/0/default.jpg",
+       "service": {"@id": "https://iiif.example.edu/i/0"}}}]},
+    {"@id": "https://iiif.example.edu/c/1", "label": "Page 2",
+     "images": [{"resource": {
+       "@id": "https://iiif.example.edu/i/1/full/full/0/default.jpg"}}]}
+  ]}]
+}

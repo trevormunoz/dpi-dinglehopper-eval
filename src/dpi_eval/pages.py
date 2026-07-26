@@ -8,37 +8,157 @@ reports and are formatted here, never recomputed — the engine's numbers
 are the single source of truth.
 """
 
+import re
+import secrets
 from html import escape
+from urllib.parse import quote
 
 _STYLE = """
+  /* tokens hand-duplicated in desktop/ui/index.html — keep in sync */
+  :root {
+    --space-1: .25rem; --space-2: .5rem; --space-3: 1rem; --space-4: 2rem;
+    --fs-small: .875rem; --fs-base: 1rem; --fs-large: 1.25rem; --fs-xl: 2rem;
+    --color-ink: #1a1a1a; --color-muted: #595959; --color-accent: #0b5fff;
+    --color-ok: #1a7f37; --color-warn: #9a6700; --color-err: #b42318;
+  }
   body { font-family: system-ui, sans-serif; max-width: 44rem;
-         margin: 2rem auto; padding: 0 1rem; line-height: 1.5;
-         color: #1a1a1a; }
-  h1 { font-size: 1.4rem; }
-  fieldset { margin: 1rem 0; border: 1px solid #767676;
+         margin: var(--space-4) auto; padding: 0 var(--space-3);
+         line-height: 1.5; color: var(--color-ink); }
+  /* Explicit type scale: h1 > h2 > h3 (was inverted — h2 outsized h1). */
+  h1 { font-size: var(--fs-xl); line-height: 1.15;
+       letter-spacing: -0.01em; margin: 0 0 var(--space-2); }
+  h2 { font-size: var(--fs-large); margin: var(--space-4) 0 var(--space-2); }
+  h3 { font-size: var(--fs-base); margin: var(--space-3) 0 var(--space-2); }
+  a { color: var(--color-accent); }
+  /* Correct per the HTML spec, global: without this, a more specific
+     display rule elsewhere (e.g. .picked's display:flex) can override
+     the [hidden] attribute and bleed hidden content through. */
+  [hidden] { display: none !important; }
+  fieldset { margin: var(--space-3) 0; border: 1px solid #767676;
              border-radius: 4px; }
   legend { font-weight: 600; }
-  button { font-size: 1rem; padding: 0.5rem 1.5rem; }
-  a:focus-visible, button:focus-visible, input:focus-visible {
+  a:focus-visible, button:focus-visible, input:focus-visible,
+  summary:focus-visible {
     outline: 3px solid #1a4a8a; outline-offset: 2px; }
+
+  /* Button token (F13): one primary solid style, plus a quiet variant. */
+  button { font-size: var(--fs-base); font-family: inherit;
+           padding: var(--space-2) var(--space-4); border-radius: 4px;
+           border: 1px solid var(--color-accent); cursor: pointer;
+           background: var(--color-accent); color: #fff; }
+  button:hover { background: #0949c9; border-color: #0949c9; }
+  button[disabled] { background: var(--color-muted);
+                     border-color: var(--color-muted); cursor: default; }
+  button.quiet { background: #fff; color: var(--color-accent); }
+  button.quiet:hover { background: #f0f5ff; }
+
+  /* Notice component (F19): three tiers. Old .ok/.banner/.error kept as
+     aliases until the 7.x copy tasks migrate their call sites. */
+  .notice { padding: var(--space-2) var(--space-3);
+            border: 1px solid var(--color-muted);
+            border-left: 6px solid var(--color-muted); border-radius: 4px;
+            margin: var(--space-3) 0; }
+  .notice-ok { border-color: var(--color-ok); background: #eef7f0; }
+  .notice-ok, .notice-ok > * { color: #14501f; }
+  .notice-warn { border-color: var(--color-warn); background: #fdf6e7; }
+  .notice-warn, .notice-warn > * { color: #6b4a00; }
+  .notice-err { border-color: var(--color-err); background: #fdeeec; }
+  .notice-err, .notice-err > * { color: #7f1d15; }
   .error, .banner { background: #fdecea; border: 1px solid #7a1f12;
                     padding: 0.5rem 1rem; border-radius: 4px; }
   .ok { background: #eafaf1; border: 1px solid #1d6f43;
         padding: 0.5rem 1rem; border-radius: 4px; }
-  .lead { font-size: 1.15rem; }
-  table { border-collapse: collapse; margin: 1rem 0; }
-  caption { text-align: left; font-size: 0.9rem; color: #3d3d3d;
-            padding-bottom: 0.5rem; }
+
+  /* Verdict / score-display: the headline judgment, first on the page. */
+  .verdict { margin: var(--space-4) 0; padding: var(--space-3) var(--space-4);
+             border: 1px solid #d7d7d7; border-radius: 8px;
+             border-left: 8px solid var(--color-muted); }
+  .verdict[data-band="ok"] { border-left-color: var(--color-ok); }
+  .verdict[data-band="warn"] { border-left-color: var(--color-warn); }
+  .verdict[data-band="err"] { border-left-color: var(--color-err); }
+  .verdict-band { font-size: var(--fs-small); font-weight: 700;
+                  text-transform: uppercase; letter-spacing: .09em;
+                  margin: 0 0 var(--space-1); color: var(--color-muted); }
+  .verdict[data-band="ok"] .verdict-band { color: var(--color-ok); }
+  .verdict[data-band="warn"] .verdict-band { color: var(--color-warn); }
+  .verdict[data-band="err"] .verdict-band { color: var(--color-err); }
+  .verdict-score { display: block; font-size: 3.25rem; font-weight: 700;
+                   line-height: 1; letter-spacing: -0.02em;
+                   font-variant-numeric: tabular-nums;
+                   margin: 0 0 var(--space-2); }
+  .verdict-label { margin: 0; color: var(--color-muted);
+                   font-size: var(--fs-base); max-width: 34rem; }
+
+  .section { margin: var(--space-4) 0; }
+  .lead { font-size: var(--fs-large); }
+  table { border-collapse: collapse; margin: var(--space-3) 0; width: 100%; }
+  caption { text-align: left; font-size: var(--fs-small);
+            color: var(--color-muted); padding-bottom: var(--space-2); }
   th, td { border: 1px solid #767676; padding: 0.35rem 0.6rem;
            text-align: left; }
+  thead th { background: #f3f4f6; }
   td.num { font-variant-numeric: tabular-nums; text-align: right; }
-  .note { font-size: 0.9rem; color: #3d3d3d; }
+  .note { font-size: var(--fs-small); color: var(--color-muted); }
+  details.section > summary { cursor: pointer; font-weight: 600;
+                             color: var(--color-ink); }
   ul.stems { columns: 2; }
-  footer { margin-top: 3rem; color: #3d3d3d; font-size: 0.9rem; }
+  footer { margin-top: var(--space-4); color: var(--color-muted);
+           font-size: var(--fs-small); }
+
+  /* Progressive form (F6/F10/F17/F7). Every cue here is visual only:
+     no rule disables a control or removes it from the tab order. */
+  fieldset { transition: opacity .18s ease; }
+  fieldset.is-muted { opacity: .55; }
+  .picked { display: flex; flex-wrap: wrap; align-items: baseline;
+            gap: var(--space-1) var(--space-2); margin-top: var(--space-2); }
+  .picked-check { color: var(--color-ok); font-weight: 700; }
+  .picked-name { font-weight: 600; }
+  .picked-path { flex-basis: 100%; color: var(--color-muted);
+                 font-size: var(--fs-small); overflow-wrap: anywhere; }
+  form.is-grading { opacity: .6; transition: opacity .18s ease; }
+  .grading-status { margin: var(--space-3) 0;
+                    padding: var(--space-2) var(--space-3);
+                    border: 1px solid var(--color-accent);
+                    border-left: 6px solid var(--color-accent);
+                    border-radius: 4px; }
+  .grading-status-headline { margin: 0; font-size: var(--fs-large);
+                             font-weight: 600; }
+  .grading-elapsed { font-variant-numeric: tabular-nums;
+                     color: var(--color-muted); }
+  @media (prefers-reduced-motion: reduce) {
+    fieldset, form.is-grading { transition: none; }
+  }
+
+  /* Wrapped dinglehopper report body (F20): the report's own grid
+     classes, styled here because body extraction already dropped its
+     Bootstrap CSS and the columns rendered stacked. Scoped under
+     .section so it only touches the report body, not the rest of the
+     shell (.section is also used as a generic wrapper elsewhere). */
+  .section .row { display: grid; grid-template-columns: 1fr 1fr;
+                  gap: var(--space-3); margin: 0 0 var(--space-3); }
+  .section .row.diff-header { font-weight: 600; font-size: var(--fs-small);
+                              color: var(--color-muted); margin-bottom: 0; }
+  .section .col-md-6 { padding: var(--space-2); border-radius: 4px; }
+  .section .gt { background: #eef7f0; }
+  .section .ocr { background: #fdf6e7; }
+  .section .diff { background: #fff3b0; text-decoration: underline;
+                   text-decoration-thickness: 2px; }
+  .section h2 { font-size: var(--fs-large);
+                margin: var(--space-4) 0 var(--space-2); }
+  /* A: the summary's "Found differences" (common-mistakes) tables are
+     plain, unclassed <table> markup — the generic table/th/td rules
+     above already apply. The one gap: their Occurrences column (the
+     3rd and last header) isn't marked up with td.num like our own
+     tables, so right-align it structurally via :has(), matched only
+     when the header row has exactly three columns (GT/OCR/
+     Occurrences) — never the five-column per-page scores table. */
+  .section table:has(thead th:nth-child(3):last-child) td:last-child {
+    text-align: right; font-variant-numeric: tabular-nums;
+  }
 """
 
 
-def _document(title: str, body: str) -> str:
+def _document(title: str, body: str, *, extra_head: str = "") -> str:
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -46,7 +166,7 @@ def _document(title: str, body: str) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{escape(title)}</title>
 <style>{_STYLE}</style>
-</head>
+{extra_head}</head>
 <body>
 <main>
 {body}
@@ -62,32 +182,256 @@ def _pct(value) -> str:
     return "—"
 
 
-def form_page() -> str:
+def form_page(*, token: str | None = None) -> str:
+    meta = f'<meta name="dpi-eval-token" content="{escape(token)}">\n' if token else ""
+    # Plain (non-f) string: the inline script is full of `{}` literals, so
+    # kept un-escaped for readability. Nothing is interpolated by f-string
+    # here; the token reaches the page via `meta` in the head (for the
+    # desktop fetch) and via the <!--HIDDEN_TOKEN--> placeholder below
+    # (for the plain browser form POST, which /grade now requires).
     body = """
 <h1>Grade OCR against ground truth</h1>
-<p>Pick the folder with your ground-truth transcriptions
-(<code>&lt;name&gt;.gt.txt</code>, one per sampled page) and the folder
-with the OCR files they grade (<code>&lt;name&gt;.hocr</code>,
-<code>&lt;name&gt;.xml</code>, or <code>&lt;name&gt;.txt</code> — the
-name before the extension must match). Only pages with a ground-truth
-file are graded.</p>
-<form action="/grade" method="post" enctype="multipart/form-data"
-      onsubmit="var b=document.getElementById('run');b.disabled=true;b.textContent='Grading\\u2026';">
-  <fieldset>
-    <legend>Ground-truth folder</legend>
-    <input type="file" name="gt_files" webkitdirectory multiple required>
+<p><a href="/transcribe">Transcribe a sample</a></p>
+<div id="grading-status" class="grading-status" hidden>
+  <p class="grading-status-headline"><span id="grading-status-msg"
+      aria-live="polite"></span><span id="grading-elapsed"
+      aria-hidden="true"></span></p>
+  <p class="note">Still working — the page updates when grading finishes.</p>
+</div>
+<p class="lead">Choose two folders, then grade.</p>
+<p>The name before the extension pairs a ground-truth file with the OCR
+file it grades. Only pages that have a ground-truth file are graded.</p>
+<ul>
+  <li>Ground-truth files end in <code>.gt.txt</code> — one per sampled
+    page.</li>
+  <li>OCR files end in <code>.hocr</code>, <code>.xml</code>, or
+    <code>.txt</code>.</li>
+  <li>Matching names pair up: <code>page_0.gt.txt</code> grades
+    <code>page_0.txt</code>.</li>
+</ul>
+<div id="dpi-eval-error" class="error" aria-live="polite" tabindex="-1"
+     hidden></div>
+<form id="dpi-eval-form" action="/grade" method="post"
+      enctype="multipart/form-data"
+      onsubmit="if(window.__dpiStartGrading)window.__dpiStartGrading();">
+  <!--HIDDEN_TOKEN-->
+  <fieldset id="gt-fieldset">
+    <legend>1. Ground-truth folder</legend>
+    <input type="file" id="gt_files" name="gt_files" webkitdirectory
+           multiple required>
+    <button type="button" id="gt-picker-btn" hidden
+            aria-describedby="gt-picker-path">Choose ground-truth
+      folder&hellip;</button>
+    <div id="gt-picker-path" class="picked" hidden>
+      <span class="picked-check" aria-hidden="true">&#10003;</span>
+      <span class="picked-name"></span>
+      <span class="picked-path"></span>
+    </div>
   </fieldset>
-  <fieldset>
-    <legend>OCR folder</legend>
-    <input type="file" name="ocr_files" webkitdirectory multiple required>
+  <fieldset id="ocr-fieldset">
+    <legend>2. OCR folder</legend>
+    <input type="file" id="ocr_files" name="ocr_files" webkitdirectory
+           multiple required>
+    <button type="button" id="ocr-picker-btn" hidden
+            aria-describedby="ocr-picker-path">Choose OCR
+      folder&hellip;</button>
+    <div id="ocr-picker-path" class="picked" hidden>
+      <span class="picked-check" aria-hidden="true">&#10003;</span>
+      <span class="picked-name"></span>
+      <span class="picked-path"></span>
+    </div>
   </fieldset>
-  <button id="run" type="submit">Run</button>
+  <div id="ready-notice" class="notice notice-ok"
+       hidden>Both folders chosen — ready to grade.</div>
+  <button id="run" type="submit">Grade this batch</button>
 </form>
 <footer>Your files never leave this computer. Results are saved in the
 <code>dpi-eval-runs</code> folder in your home folder.<br>
-Done? Close this window and the terminal window it came from.</footer>
+Done? Close this window<span id="footer-terminal-note"> and the
+terminal window it came from</span>.</footer>
+<script>
+(function () {
+  var gradingTimer = null;
+
+  // Shared by both variants: the browser form calls this from its inline
+  // onsubmit before its native POST navigation; the desktop handler calls
+  // it after validation, before fetch.
+  function startGrading() {
+    var form = document.getElementById('dpi-eval-form');
+    var runBtn = document.getElementById('run');
+    var status = document.getElementById('grading-status');
+    var statusMsg = document.getElementById('grading-status-msg');
+    var elapsed = document.getElementById('grading-elapsed');
+    runBtn.disabled = true;
+    runBtn.textContent = 'Grading…';
+    form.setAttribute('aria-busy', 'true');
+    form.classList.add('is-grading');
+    status.hidden = false;
+    // Announced once via the aria-live message element. The elapsed
+    // counter below lives outside that region (and is aria-hidden), so
+    // its per-second ticks are never announced.
+    statusMsg.textContent = 'Grading your batch…';
+    var started = Date.now();
+    function tick() {
+      var s = Math.round((Date.now() - started) / 1000);
+      elapsed.textContent = ' (' + s + 's)';
+    }
+    tick();
+    gradingTimer = setInterval(tick, 1000);
+  }
+  window.__dpiStartGrading = startGrading;
+
+  function resetGrading() {
+    if (gradingTimer) { clearInterval(gradingTimer); gradingTimer = null; }
+    var form = document.getElementById('dpi-eval-form');
+    var runBtn = document.getElementById('run');
+    var status = document.getElementById('grading-status');
+    runBtn.disabled = false;
+    runBtn.textContent = 'Grade this batch';
+    form.setAttribute('aria-busy', 'false');
+    form.classList.remove('is-grading');
+    status.hidden = true;
+  }
+
+  window.addEventListener('load', function () {
+    if (!window.__TAURI__) return;
+    var tokenMeta = document.querySelector('meta[name="dpi-eval-token"]');
+    if (!tokenMeta) return;
+    var token = tokenMeta.content;
+
+    var form = document.getElementById('dpi-eval-form');
+    var errorBox = document.getElementById('dpi-eval-error');
+    var readyNotice = document.getElementById('ready-notice');
+    var ocrFieldset = document.getElementById('ocr-fieldset');
+    var termNote = document.getElementById('footer-terminal-note');
+    if (termNote) termNote.hidden = true;  // desktop has no terminal (F3)
+    var selections = {gt: null, ocr: null};
+
+    function showError(message) {
+      errorBox.textContent = message;
+      errorBox.hidden = false;
+      errorBox.focus();
+    }
+
+    function clearError() {
+      errorBox.hidden = true;
+      errorBox.textContent = '';
+    }
+
+    function updateReadyState() {
+      // Muting step 2 is a visual hint only (opacity via .is-muted); it
+      // never disables the control or removes it from the tab order, so a
+      // keyboard-first user may still choose OCR first.
+      if (selections.gt) ocrFieldset.classList.remove('is-muted');
+      else ocrFieldset.classList.add('is-muted');
+      readyNotice.hidden = !(selections.gt && selections.ocr);
+    }
+
+    function wirePicker(kind, inputId, btnId, pathId) {
+      var input = document.getElementById(inputId);
+      var btn = document.getElementById(btnId);
+      var pathEl = document.getElementById(pathId);
+      input.hidden = true;
+      input.required = false;
+      btn.hidden = false;
+      btn.addEventListener('click', function () {
+        window.__TAURI__.dialog.open({directory: true}).then(
+          function (selected) {
+            if (!selected) return;
+            selections[kind] = selected;
+            var parts = selected.split(/[/\\\\]/).filter(Boolean);
+            var name = parts.length ? parts[parts.length - 1] : selected;
+            pathEl.querySelector('.picked-name').textContent = name;
+            pathEl.querySelector('.picked-path').textContent = selected;
+            pathEl.hidden = false;
+            updateReadyState();
+          },
+          function (err) {
+            showError('Could not open the folder picker: ' + err);
+          }
+        );
+      });
+    }
+
+    ocrFieldset.classList.add('is-muted');
+    wirePicker('gt', 'gt_files', 'gt-picker-btn', 'gt-picker-path');
+    wirePicker('ocr', 'ocr_files', 'ocr-picker-btn', 'ocr-picker-path');
+
+    form.onsubmit = function (evt) {
+      evt.preventDefault();
+      clearError();
+      if (!selections.gt || !selections.ocr) {
+        showError('Choose both the ground-truth folder and the OCR folder.');
+        return;
+      }
+      startGrading();
+      fetch('/grade-paths', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-DPI-Eval-Token': token
+        },
+        body: JSON.stringify({gt_dir: selections.gt, ocr_dir: selections.ocr})
+      }).then(function (resp) {
+        return resp.json().then(function (data) {
+          return {ok: resp.ok, data: data};
+        });
+      }).then(function (result) {
+        if (!result.ok) {
+          throw new Error(result.data.error || 'Grading failed.');
+        }
+        window.location = result.data.run_url;
+      }).catch(function (err) {
+        showError(err.message || String(err));
+        resetGrading();
+      });
+    };
+  });
+})();
+</script>
 """
-    return _document("dpi-eval", body)
+    body = body.replace("<!--HIDDEN_TOKEN-->", _hidden_token(token or ""))
+    return _document("dpi-eval", body, extra_head=meta)
+
+
+def _url_path(segment: str) -> str:
+    """One path segment of a link, percent-encoded then attribute-escaped.
+
+    Report stems are ground-truth filenames, so they can hold spaces, `#`,
+    `?` and non-ASCII characters. Rendered verbatim (as they were), a `#`
+    silently truncated the link into a fragment; quoting keeps the whole
+    stem in the path, where the route decodes it again.
+    """
+    return escape(quote(segment, safe=""), quote=True)
+
+
+def _band(wer) -> tuple[str, str]:
+    """Map an average WER onto a plain-language judgment band.
+
+    Colour alone fails accessibility, so every band carries a word:
+    green <=10% "Strong", amber <=25% "Review the diffs", red otherwise.
+    """
+    if not isinstance(wer, (int, float)):
+        return ("", "No score")
+    if wer <= 0.10:
+        return ("ok", "Strong")
+    if wer <= 0.25:
+        return ("warn", "Review the diffs")
+    return ("err", "Needs attention")
+
+
+def _verdict_block(summary: dict) -> str:
+    """The headline judgment: large tabular score + banded label, first."""
+    wer = summary.get("wer_avg")
+    band, word = _band(wer)
+    return (
+        f'<section class="verdict" data-band="{band}">'
+        f'<p class="verdict-band">{escape(word)}</p>'
+        f'<p class="verdict-score">{_pct(wer)}</p>'
+        '<p class="verdict-label">Word error rate — the share of words '
+        "that differ from the ground truth. Lower is better.</p>"
+        "</section>"
+    )
 
 
 def _scores_section(
@@ -105,34 +449,32 @@ def _scores_section(
         f'<td class="num">{_pct((page_metrics.get(stem) or {}).get("wer"))}</td>'
         f'<td class="num">{_pct((page_metrics.get(stem) or {}).get("cer"))}</td>'
         f'<td class="num">{(page_metrics.get(stem) or {}).get("n_words") or "—"}</td>'
-        f'<td><a href="/files/{run}/reports/{escape(stem)}.html">View diff</a></td>'
+        f'<td><a href="/runs/{run}/reports/{_url_path(stem)}">View diff</a></td>'
         "</tr>"
         for stem in succeeded
     )
     return (
-        "<h2>Batch scores</h2>"
-        '<p class="lead">Word error rate: '
-        f"<strong>{_pct(summary.get('wer_avg'))}</strong> — the share of "
-        "words that differ from the ground truth. Lower is better.</p>"
-        f"<p>Raw character error rate: {_pct(summary.get('cer_avg'))} — the "
-        "share of characters that differ, line breaks included.</p>"
-        '<p class="note">These are raw scores: differences in line breaks '
-        "count as errors. If you typed your transcription as flowing "
-        "paragraphs, up to about half of a raw score can be layout rather "
-        "than recognition — read raw scores as an upper bound.</p>"
-        f"<p>Based on {len(succeeded)} graded page(s) — {total_words} "
-        f"words, {total_chars} characters of ground truth.</p>"
-        "<p>In each diff, the <strong>left column is the ground "
-        "truth</strong> (what the page says) and the <strong>right column "
-        "is what the OCR produced</strong>.</p>"
-        "<table><caption>Per-page scores. Percentages show how much of "
-        "each page differs from the ground truth.</caption>"
+        '<table class="section"><caption>Per-page scores. Percentages show '
+        "how much of each page differs from the ground truth.</caption>"
         '<thead><tr><th scope="col">Page</th>'
         '<th scope="col">Word error rate</th>'
         '<th scope="col">Raw character error rate</th>'
         '<th scope="col">Words</th>'
         '<th scope="col">Diff</th></tr></thead>'
         f"<tbody>{rows}</tbody></table>"
+        '<p class="note section">These are raw scores: differences in line '
+        "breaks count as errors. If you typed your transcription as flowing "
+        "paragraphs, up to about half of a raw score can be layout rather "
+        "than recognition — read raw scores as an upper bound. In each diff, "
+        "the left column is the ground truth (what the page says) and the "
+        "right column is what the OCR produced.</p>"
+        '<details class="section"><summary>How these scores are calculated'
+        "</summary>"
+        f"<p>Raw character error rate: {_pct(summary.get('cer_avg'))} — the "
+        "share of characters that differ, line breaks included.</p>"
+        f"<p>Based on {len(succeeded)} graded page(s) — {total_words} "
+        f"words, {total_chars} characters of ground truth.</p>"
+        "</details>"
     )
 
 
@@ -144,35 +486,89 @@ def results_page(
     exit_code: int,
     summary: dict | None = None,
     page_metrics: dict[str, dict] | None = None,
+    summary_error: str | None = None,
 ) -> str:
     run = escape(run_id)
+    summary = summary or {}
     page_metrics = page_metrics or {}
+    sections = [
+        "<h1>Grading results</h1>",
+        f'<p class="note">Run <code>{run}</code></p>',
+    ]
     if exit_code == 0:
-        verdict = (
-            f'<div class="ok"><p>Graded {len(succeeded)} page(s).</p></div>'
-        )
+        sections.append(_verdict_block(summary))
     elif not succeeded:
-        verdict = (
-            '<div class="banner"><p>Nothing was graded. Check that your '
-            "ground-truth files end in <code>.gt.txt</code>, that they "
-            "share names with the OCR files, and that the OCR files open "
-            "correctly.</p></div>"
+        sections.append(
+            '<div class="notice notice-err"><p>None of the pages could be '
+            "graded. The files matched up by name, but grading failed on "
+            "every page — check that the OCR files open correctly, or "
+            "show this page to a supervisor.</p></div>"
         )
     else:
-        verdict = (
-            f'<div class="banner"><p>Too many pages failed ({len(failed)} '
-            f"of {len(failed) + len(succeeded)}). The results below are "
-            "incomplete — a supervisor should look at this batch.</p></div>"
-        )
-    sections = [f"<h1>Run {run}</h1>", verdict]
+        # R2-S9: failed pages and a failed rollup are independent problems and
+        # they co-occur — run_batch returns 1 for summary_error *before* it
+        # evaluates the failure rate (runner.py:123-126). These used to be
+        # elif branches, so a batch with half its pages failing and a failed
+        # rollup rendered "The pages graded normally" and nothing else. Each
+        # condition gets its own notice; neither may suppress the other.
+        graded = len(failed) + len(succeeded)
+        if failed and not summary_error:
+            # A good rollup plus exit code 1 plus a partial success can only
+            # mean run_batch crossed the failure-rate threshold
+            # (runner.py:127), so the verdict wording is earned here.
+            sections.append(
+                '<div class="notice notice-warn"><p>Too many pages failed '
+                f"({len(failed)} of {graded}). The results below are "
+                "incomplete — a supervisor should look at this batch."
+                "</p></div>"
+            )
+        elif failed:
+            # The rollup alone forced exit code 1, so the exit code says
+            # nothing about the failure rate — 1 of 10 is inside the 20%
+            # tolerance. pages.py does not know the threshold, so it reports
+            # the count rather than a verdict it cannot support.
+            sections.append(
+                '<div class="notice notice-warn"><p>'
+                f"{len(failed)} of {graded} pages failed to grade. The "
+                "results below are incomplete — a supervisor should look at "
+                "this batch.</p></div>"
+            )
+        if summary_error:
+            # "The pages graded normally" is a claim about the pages, so it is
+            # only available when none of them failed.
+            lead = ("The pages graded normally, but the batch summary"
+                    if not failed else "The batch summary")
+            sections.append(
+                f'<div class="notice notice-warn"><p>{lead} — the roll-up '
+                "that averages every page — could not be produced, so this "
+                "run has no batch score. The per-page scores below are still "
+                "valid. Show this page to a supervisor.</p></div>"
+            )
+        if not failed and not summary_error:
+            # Unreachable from run_batch, which needs one of the two to return
+            # 1 — but /runs/{id} replays result.json from disk, so a run
+            # record that names no cause must still not read as a clean run.
+            sections.append(
+                '<div class="notice notice-warn"><p>This run finished with '
+                "errors, but the run record does not say which pages or which "
+                "step. The per-page scores below may be incomplete — show "
+                "this page to a supervisor.</p></div>"
+            )
     if succeeded:
         sections.append(
-            _scores_section(run, succeeded, summary or {}, page_metrics)
+            _scores_section(run, succeeded, summary, page_metrics)
+        )
+        # No rollup was written when summarize failed, so linking to it
+        # would be a link to "No such report."
+        full_report = (
+            "" if summary_error else
+            f'<a href="/runs/{run}/reports/summary">Full technical report</a>'
+            " &middot; "
         )
         sections.append(
-            f'<p><a href="/files/{run}/reports/summary.html">'
-            "<strong>Full batch summary</strong></a> &middot; "
-            f'<a href="/runs/{run}/download">Download reports (.zip)</a></p>'
+            f'<p class="note section">{full_report}'
+            f'<a href="/runs/{run}/download">Download reports (.zip)</a>'
+            " — the zip goes to your Downloads folder.</p>"
         )
     if failed:
         items = "".join(f"<li><code>{escape(s)}</code></li>" for s in failed)
@@ -193,16 +589,615 @@ def results_page(
             "<code>.xml</code>, or <code>.txt</code>:</p>"
             f'<ul class="stems">{items}</ul>'
         )
-    sections.append('<p><a href="/">Grade another batch</a></p>')
+    # F16: nothing was graded in the zero-success state, so the exit link
+    # must not claim grading happened.
+    exit_text = "Grade another batch" if succeeded else "Back to the form"
+    sections.append(f'<p class="section"><a href="/">{exit_text}</a></p>')
     return _document(f"dpi-eval — {run_id}", "\n".join(sections))
 
 
-def error_page(message: str, details: tuple[str, ...] = ()) -> str:
+# --- F20: serve-time transform of wrapped report bodies -------------------
+# The exact, closed transform list authorized by the 2026-07-19 spec
+# amendment, plus the 2026-07-19b stats-round additions (B/C/D below).
+# Pure function of the extracted body string; the report file on disk is
+# never touched — wrapped_report() calls this in-memory only.
+
+_SCRIPT_TAG = re.compile(r"<script\b[^>]*>.*?</script>", re.S | re.I)
+_LINK_TAG = re.compile(r"<link\b[^>]*/?>", re.I)
+
+# B: dinglehopper's own report opens with two bare, unwrapped absolute
+# gt/ocr paths ("<div class=\"container\">\n\n<PATH><br>\n<PATH>\n\n..."
+# right before "<h2>Metrics</h2>"). Our shell H1 already names the page,
+# so these are pure noise — matched narrowly (no angle brackets on
+# either line) so nothing else in the body can be mistaken for them.
+_RAW_PATH_LINES = re.compile(r"\n[^\n<>]+<br>\n[^\n<>]+\n(?=\s*<h2>Metrics</h2>)")
+
+_METRIC_LINE = re.compile(
+    r"<p>(?P<avg>Average )?(?P<kind>CER|WER): (?P<value>\d+(?:\.\d+)?)</p>"
+)
+_FORMATTED_METRIC_LINE = re.compile(
+    r"<p>(?:Average )?(?:Character error rate \(CER\)|"
+    r"Word error rate \(WER\)): \d+(?:\.\d+)?%</p>"
+)
+_FORMATTED_METRIC_BLOCK = re.compile(
+    r"(?:[ \t]*" + _FORMATTED_METRIC_LINE.pattern + r"[ \t]*\n?)+"
+)
+_METRIC_LABELS = {
+    "CER": "Character error rate (CER)",
+    "WER": "Word error rate (WER)",
+}
+_METRIC_LEGEND_PREFIX = (
+    '<p class="note">CER counts character-level differences; WER counts '
+    "word-level differences. Lower is better. The percentages here are "
+)
+# C: the summary rolls its two Average lines up inside a two-column
+# grid row (`.row cer`, styled by the generic `.section .row` grid
+# rule) — injecting the legend inside that div made it fight the
+# metrics for a grid column. The batch-average copy is also wrong for
+# a single page's raw score, so both the placement and wording are
+# summary-specific.
+_METRIC_ROW = re.compile(r'<div class="row cer">.*?</div>', re.S)
+
+# C: the summary's own "<h1>Summary of all reports</h1>" duplicates our
+# shell H1 ("Technical report: batch summary") — drop the report's row
+# entirely rather than leave an empty grid cell behind.
+_SUMMARY_HEADING_ROW = re.compile(
+    r'<div class="row">\s*<h1>[^<]*</h1>\s*</div>\s*'
+)
+
+_SECTION_HEADER_ROW = re.compile(r'(<h2>[^<]*</h2>\s*)(<div class="row">)')
+_DIFF_HEADER = (
+    '<div class="row diff-header"><div class="col-md-6">Ground truth</div>'
+    '<div class="col-md-6">OCR</div></div>'
+)
+
+# D: first-party (not CDN) sort behavior for the summary's two
+# "Found differences" tables — the raw tables' own jQuery sort script
+# was already stripped above. Keyboard accessible via tabindex +
+# Enter/Space, mirrors click. aria-sort toggles on the active header.
+_SORT_SCRIPT = """<script>
+(function () {
+  function cellText(cell) { return cell.textContent.trim(); }
+  function sortRows(table, colIndex, ascending) {
+    var tbody = table.tBodies[0];
+    if (!tbody) return;
+    var rows = Array.prototype.slice.call(tbody.rows);
+    rows.sort(function (a, b) {
+      var av = cellText(a.cells[colIndex]);
+      var bv = cellText(b.cells[colIndex]);
+      var an = parseFloat(av);
+      var bn = parseFloat(bv);
+      var cmp = (!isNaN(an) && !isNaN(bn)) ? an - bn : av.localeCompare(bv);
+      return ascending ? cmp : -cmp;
+    });
+    rows.forEach(function (row) { tbody.appendChild(row); });
+  }
+  function activate(th) {
+    var table = th.closest('table');
+    if (!table) return;
+    var headers = Array.prototype.slice.call(th.parentNode.children);
+    var index = headers.indexOf(th);
+    var ascending = th.getAttribute('aria-sort') !== 'ascending';
+    headers.forEach(function (h) { h.removeAttribute('aria-sort'); });
+    th.setAttribute('aria-sort', ascending ? 'ascending' : 'descending');
+    sortRows(table, index, ascending);
+  }
+  document.querySelectorAll('table thead th').forEach(function (th) {
+    th.tabIndex = 0;
+    th.setAttribute('role', 'button');
+    th.addEventListener('click', function () { activate(th); });
+    th.addEventListener('keydown', function (evt) {
+      if (evt.key === 'Enter' || evt.key === ' ') {
+        evt.preventDefault();
+        activate(th);
+      }
+    });
+  });
+})();
+</script>"""
+
+
+def _format_metric_line(match: re.Match) -> str:
+    label = _METRIC_LABELS[match.group("kind")]
+    if match.group("avg"):
+        label = f"Average {label[0].lower()}{label[1:]}"
+    pct = float(match.group("value")) * 100
+    return f"<p>{label}: {pct:.1f}%</p>"
+
+
+def _inject_diff_header(match: re.Match) -> str:
+    return f"{match.group(1)}{_DIFF_HEADER}\n{match.group(2)}"
+
+
+def transform_report_body(inner_html: str) -> str:
+    """Reshape an extracted dinglehopper report body for the wrapped
+    shell (F20, amended 2026-07-19b). In order:
+
+    1. Strip CDN <script src>, inline <script>, and any <link> tags —
+       the line tooltips already work via native title attributes.
+    2. (B) Drop the report's own bare gt/ocr path lines — our shell H1
+       already names the page.
+    3. (C) Drop the summary's own "Summary of all reports" H1 — our
+       shell H1 covers it.
+    4. Rewrite bare/Average CER|WER decimal lines to one-decimal
+       percentages.
+    5. (C) Inject a one-line CER/WER legend right after those lines,
+       outside the two-column metrics row for the summary, with
+       context-aware copy (per-page raw score vs. batch average).
+    6. Label the diff columns Ground truth / OCR at the table itself.
+    7. (D) For the summary only: append a small first-party script
+       that makes the "Found differences" table headers sortable.
+
+    (Shell CSS for the report's own classes lives in _STYLE.)
+    """
+    is_summary = bool(re.search(r"Average (?:CER|WER):", inner_html))
+    legend_suffix = (
+        "averages across the whole batch."
+        if is_summary
+        else "this page's raw scores."
+    )
+    legend = f"{_METRIC_LEGEND_PREFIX}{legend_suffix}</p>"
+
+    html = _SCRIPT_TAG.sub("", inner_html)
+    html = _LINK_TAG.sub("", html)
+    html = _RAW_PATH_LINES.sub("\n", html)
+    html = _SUMMARY_HEADING_ROW.sub("", html)
+    html = _METRIC_LINE.sub(_format_metric_line, html)
+
+    if _METRIC_ROW.search(html):
+        html = _METRIC_ROW.sub(lambda m: f"{m.group(0)}\n{legend}\n", html)
+    else:
+        html = _FORMATTED_METRIC_BLOCK.sub(
+            lambda m: f"{m.group(0).rstrip()}\n{legend}\n", html
+        )
+
+    html = _SECTION_HEADER_ROW.sub(_inject_diff_header, html)
+
+    if is_summary:
+        html = f"{html.rstrip()}\n{_SORT_SCRIPT}"
+    return html
+
+
+def report_page(run_id: str, name: str, inner_html: str) -> str:
+    run = escape(run_id)
+    # C: the URL segment "summary" reads as a raw label in the H1;
+    # name validation upstream (wrapped_report's regex) is untouched.
+    heading = "batch summary" if name == "summary" else escape(name)
+    body = (
+        # GOV.UK back-link convention: the back link sits above the H1.
+        f'<p class="note"><a href="/runs/{run}">Back to results</a></p>'
+        f"<h1>Technical report: {heading}</h1>"
+        f'<p class="note">Run <code>{run}</code></p>'
+        f'<div class="section">{inner_html}</div>'
+    )
+    return _document(f"dpi-eval — {name}", body)
+
+
+def error_page(
+    message: str,
+    details: tuple[str, ...] = (),
+    heading: str = "Can't grade this batch",
+    back_href: str = "/",
+    back_label: str = "Back to the form",
+) -> str:
+    """The shared error surface. The heading and the exit link are arguments
+    because this page serves both arms: the defaults are the grading form's,
+    and a transcription caller passes transcribe_error_context() instead.
+    """
     items = "".join(f"<li><code>{escape(d)}</code></li>" for d in details)
     detail_html = f"<ul>{items}</ul>" if items else ""
     body = (
-        "<h1>Can't grade this batch</h1>"
+        # quote=False on the two text nodes: an apostrophe needs no escaping
+        # outside an attribute, and "Can&#x27;t grade this batch" in the source
+        # is a needless surprise for anyone reading the rendered page.
+        f"<h1>{escape(heading, quote=False)}</h1>"
         f'<div class="error"><p>{escape(message)}</p>{detail_html}</div>'
-        '<p><a href="/">Back to the form</a></p>'
+        f'<p><a href="{escape(back_href, quote=True)}">'
+        f"{escape(back_label, quote=False)}</a></p>"
     )
     return _document("dpi-eval — problem", body)
+
+
+def transcribe_error_context(session_id: str | None = None) -> dict[str, str]:
+    """error_page kwargs for an error raised on the transcription side.
+
+    R2-S10: error_page defaults to the grading form because most of its
+    callers are the grading pipeline, but it is also the error surface for
+    confirm, editor, editor_action, clone, export and grade preview. Rendered
+    with those defaults, a session error appeared under "Can't grade this
+    batch" and offered only a link to the grading form — so the clone error
+    that says "Go back, choose the draft folder" had no link that reached it.
+    """
+    if session_id:
+        return {
+            "heading": "Can't do that in this session",
+            # The sid arrives from a URL path and goes straight back into an
+            # href, so encode the whole thing as one segment (see _url_path).
+            "back_href": f"/transcribe/sessions/{quote(session_id, safe='')}",
+            "back_label": "Back to the session",
+        }
+    # No session to go back to: either creating one failed, or the sid in the
+    # URL names nothing. The transcription home page lists the real ones.
+    return {
+        "heading": "Can't open this transcription session",
+        "back_href": "/transcribe",
+        "back_label": "Back to transcription",
+    }
+
+
+def _hidden_token(token: str) -> str:
+    return f'<input type="hidden" name="token" value="{escape(token or "")}">'
+
+
+def _safe_url(url: str) -> str:
+    """Escape an externally sourced URL for an attribute, and refuse
+    non-http(s) schemes outright (manifest values are untrusted).
+
+    The isinstance check is not redundant with the parser's own id typing:
+    `url: str` is an annotation, not a runtime check, and a session.json
+    written before that guard existed still holds whatever its manifest had.
+    Nothing rewrites those files, so a dict there faulted `.startswith()` and
+    left the session permanently un-openable — degrading to no image keeps the
+    transcription and the export reachable.
+    """
+    if not isinstance(url, str):
+        return ""
+    if not url or not url.startswith(("https://", "http://", "/")):
+        return ""
+    return escape(url, quote=True)
+
+
+# --- Native folder pickers for the transcription pages ---------------------
+#
+# The grading form's wirePicker() (see form_page) swaps a webkitdirectory
+# file input for the native dialog. These fields are different: they are
+# already plain text paths that the form posts as-is, so the picker only has
+# to write the chosen path into the input — no separate paths endpoint.
+# capabilities/remote.json (identifier `remote-dialog`)
+# already grants dialog:allow-open to these
+# sidecar-served pages.
+
+
+def _picker_field(field: str, label: str, button: str) -> str:
+    """A typed path input (browser mode) plus a native picker button that
+    the load handler reveals only when the Tauri dialog is available."""
+    return f"""
+      <p id="{field}-typed"><label>{label}
+        <input id="{field}" name="{field}"></label></p>
+      <button type="button" id="{field}-picker-btn" hidden
+              aria-describedby="{field}-picker-path">{button}&hellip;</button>
+      <div id="{field}-picker-path" class="picked" hidden>
+        <span class="picked-check" aria-hidden="true">&#10003;</span>
+        <span class="picked-name"></span>
+        <span class="picked-path"></span>
+      </div>"""
+
+
+# __TAURI__ is touched only inside the load handler: init-script ordering has
+# raced page scripts before (tauri#12990), which was one of this branch's
+# chrome-level failures. Do not hoist the probe.
+_PICKER_SCRIPT = """<script>
+(function () {
+  window.addEventListener('load', function () {
+    if (!window.__TAURI__) return;
+    __FIELDS__.forEach(function (field) {
+      var input = document.getElementById(field);
+      var typed = document.getElementById(field + '-typed');
+      var btn = document.getElementById(field + '-picker-btn');
+      var pathEl = document.getElementById(field + '-picker-path');
+      if (!input || !btn || !pathEl) return;
+      if (typed) typed.hidden = true;
+      btn.hidden = false;
+      btn.addEventListener('click', function () {
+        window.__TAURI__.dialog.open({directory: true}).then(
+          function (selected) {
+            if (!selected) return;
+            input.value = selected;
+            var parts = selected.split(/[/\\\\]/).filter(Boolean);
+            pathEl.querySelector('.picked-name').textContent =
+              parts.length ? parts[parts.length - 1] : selected;
+            pathEl.querySelector('.picked-path').textContent = selected;
+            pathEl.hidden = false;
+          },
+          function (err) {
+            // Never strand the user, and never swallow the reason. Restore
+            // the typed field as a working fallback, say what went wrong,
+            // and leave the button usable so a transient dialog failure
+            // does not cost the picker until a reload.
+            if (typed) typed.hidden = false;
+            pathEl.querySelector('.picked-name').textContent =
+              'Folder picker unavailable';
+            pathEl.querySelector('.picked-path').textContent =
+              'Could not open the folder picker: ' + err + '. Type the path instead.';
+            pathEl.hidden = false;
+          }
+        );
+      });
+    });
+  });
+})();
+</script>"""
+
+
+def _picker_script(fields: tuple[str, ...]) -> str:
+    listing = "[" + ", ".join(f"'{f}'" for f in fields) + "]"
+    return _PICKER_SCRIPT.replace("__FIELDS__", listing)
+
+
+def transcribe_home_page(sessions: list[dict], token: str) -> str:
+    rows = "".join(
+        f'<li><a href="/transcribe/sessions/{escape(s["id"])}">{escape(s["id"])}</a>'
+        f' — {escape(s.get("collection") or "no collection")}'
+        f' — {escape(s["mode"])} — {escape(s["state"])}</li>'
+        for s in sessions
+    ) or "<li>No sessions yet.</li>"
+    body = f"""
+    <h1>Transcribe</h1>
+    <h2>Sessions in progress</h2>
+    <ul>{rows}</ul>
+    <h2>Start a new session</h2>
+    <form method="post" action="/transcribe/sessions">
+      {_hidden_token(token)}
+      <p><label>Source type
+        <select name="source_type">
+          <option value="local">Local image folder (desktop)</option>
+          <option value="iiif">IIIF manifest URL</option>
+        </select></label></p>
+      {_picker_field("folder", "Local image folder", "Choose image folder")}
+      <p><label>Manifest URL <input name="manifest_url" placeholder="https://…"></label></p>
+      <p><label>Mode
+        <select name="mode">
+          <option value="from_scratch">Type from scratch</option>
+          <option value="corrected">Correct a machine draft</option>
+        </select></label></p>
+      {_picker_field("draft_folder", "Draft folder (correction mode)",
+                     "Choose draft folder")}
+      <p><label>Collection / handle (optional) <input name="collection"></label></p>
+      <p><button type="submit">List pages</button></p>
+    </form>
+    {_picker_script(("folder", "draft_folder"))}
+    """
+    return _document("Transcribe — dpi-eval", body)
+
+
+def selection_page(session: dict, token: str) -> str:
+    boxes = "".join(
+        f'<li><label><input type="checkbox" name="pages" '
+        f'value="{p["source_index"]}" checked> '
+        f'{escape(p["stem"])} {escape(p.get("label") or "")}</label></li>'
+        for p in session["pages"]
+    )
+    body = f"""
+    <h1>Select the sample pages</h1>
+    <p data-session-id="{escape(session["id"])}">Untick pages that are not part of
+    this sample. The queue is exactly what you tick.</p>
+    <form method="post" action="/transcribe/sessions/{escape(session["id"])}/confirm">
+      {_hidden_token(token)}
+      <p><button type="button" onclick="document.querySelectorAll('[name=pages]').forEach(b => b.checked = !b.checked)">Invert selection</button></p>
+      <ul>{boxes}</ul>
+      <p><button type="submit">Start transcribing</button></p>
+    </form>
+    """
+    return _document("Select pages — dpi-eval", body)
+
+
+def session_page(session: dict, problems: list[dict], token: str) -> str:
+    problem_stems = {p["stem"]: p["problem"] for p in problems}
+    rows = []
+    for p in session["pages"]:
+        state = p["status"] + (" ⚑" if p["flagged"] else "")
+        attention = ""
+        if p["stem"] in problem_stems:
+            attention = (
+                f' <strong>needs attention ({escape(problem_stems[p["stem"]])})</strong>'
+                f' <form style="display:inline" method="post"'
+                f' action="/transcribe/sessions/{escape(session["id"])}/pages/{p["source_index"]}">'
+                f'{_hidden_token(token)}<input type="hidden" name="action" value="adopt">'
+                f'<button>Adopt</button></form>'
+                f' <form style="display:inline" method="post"'
+                f' action="/transcribe/sessions/{escape(session["id"])}/pages/{p["source_index"]}">'
+                f'{_hidden_token(token)}<input type="hidden" name="action" value="discard">'
+                f'<button>Discard</button></form>'
+            )
+        rows.append(
+            f'<tr><td><a href="/transcribe/sessions/{escape(session["id"])}/pages/{p["source_index"]}">'
+            f'{escape(p["stem"])}</a></td><td>{escape(state)}{attention}</td>'
+            f'<td>{p["seconds_elapsed"]}s</td><td>{p["seconds_active"]}s</td></tr>')
+    saved = sum(1 for p in session["pages"] if p["status"] == "saved")
+    grade_bits = ""
+    if problems:
+        grade_bits = "<p>Grading is disabled until needs-attention pages are resolved.</p>"
+    elif saved == 0:
+        grade_bits = "<p>Grading is disabled until at least one page is saved.</p>"
+    else:
+        grade_bits = f"""
+        <form method="post" action="/transcribe/sessions/{escape(session["id"])}/grade/preview"
+              enctype="multipart/form-data">
+          {_hidden_token(token)}
+          {_picker_field("ocr_folder", "OCR folder", "Choose OCR folder")}
+          <p><label>Or, instead of the folder, upload the OCR files — one
+            way or the other, not both:
+            <input type="file" name="ocr_files" multiple></label></p>
+          <p><button type="submit">Preview grade alignment</button></p>
+        </form>
+        {_picker_script(("ocr_folder",))}"""
+    # S6: the clone creates the *other* arm. The corrected arm cannot exist
+    # without a folder of machine drafts, and a from-scratch session has none
+    # to inherit, so the student chooses one here — the route refuses rather
+    # than guessing. Cloning the other way needs no drafts, so the field is
+    # not rendered there.
+    into_corrected = session["mode"] == "from_scratch"
+    other_arm = "Correct a machine draft" if into_corrected else "Type from scratch"
+    clone_drafts = ""
+    clone_picker = ""
+    if into_corrected:
+        clone_drafts = (
+            "<p>The correction arm shows a machine draft to correct, so it "
+            "needs its own folder of hOCR or <code>.txt</code> drafts named "
+            "after these pages.</p>"
+            + _picker_field("draft_folder",
+                            "Draft folder for the correction arm",
+                            "Choose draft folder")
+        )
+        clone_picker = _picker_script(("draft_folder",))
+    body = f"""
+    <h1>Session {escape(session["id"])}</h1>
+    <p>{escape(session.get("collection") or "No collection label")} —
+       mode: {escape(session["mode"])} — conventions v{session["conventions_version"]}.
+       Timing shown below is recorded with each save and visible here — nothing
+       is collected silently.</p>
+    <table><tr><th>Page</th><th>Status</th><th>Time (elapsed)</th><th>Time (active)</th></tr>{"".join(rows)}</table>
+    {grade_bits}
+    <h2>Second arm of the comparison</h2>
+    <p>Creates a new session over these same pages in the other mode:
+       <strong>{other_arm}</strong>.</p>
+    <form method="post" action="/transcribe/sessions/{escape(session["id"])}/clone">
+      {_hidden_token(token)}
+      {clone_drafts}
+      <p><button type="submit">New session from this selection ({other_arm})</button></p>
+    </form>
+    {clone_picker}
+    <form method="post" action="/transcribe/sessions/{escape(session["id"])}/export">
+      {_hidden_token(token)}
+      <p><button type="submit">Export for repo</button></p>
+    </form>
+    <p><a href="/transcribe">Back to sessions</a></p>
+    """
+    return _document(f"Session {session['id']} — dpi-eval", body)
+
+
+def alignment_page(session: dict, alignment: dict, token: str) -> str:
+    unmatched_files = alignment["unmatched_files"]
+    rows = []
+    for page in session["pages"]:
+        if page["status"] != "saved":
+            continue
+        matched = alignment["matched"].get(page["stem"])
+        if matched:
+            cell = escape(matched)
+        elif unmatched_files:
+            options = "".join(
+                f'<option value="{escape(f)}">{escape(f)}</option>'
+                for f in unmatched_files)
+            cell = (f'<select name="override_{escape(page["stem"])}">'
+                    f'<option value="">— unmatched —</option>{options}</select>')
+        else:
+            cell = "<em>unmatched — this page will not be graded</em>"
+        rows.append(f"<tr><td>{escape(page['stem'])}</td><td>{cell}</td></tr>")
+    leftover = ", ".join(escape(f) for f in unmatched_files) or "none"
+    # S18: align() drops every file whose extension it does not recognise.
+    # On a screen headed "Check the alignment before grading", a silently
+    # dropped file is indistinguishable from one that was never exported.
+    ignored = alignment.get("ignored") or []
+    dropped = ""
+    if ignored:
+        items = "".join(f"<li><code>{escape(f)}</code></li>" for f in ignored)
+        dropped = (
+            '<div class="notice notice-warn"><p>These files are not going to '
+            "be graded, because grading reads only <code>.hocr</code>, "
+            "<code>.xml</code> and <code>.txt</code> files and these are "
+            "something else (page images, for instance). If one of them "
+            "really is a page's OCR, rename or re-export it and preview "
+            "again:</p>"
+            f'<ul class="stems">{items}</ul></div>'
+        )
+    body = f"""
+    <h1>Check the alignment before grading</h1>
+    <p>Each saved page pairs with one OCR file. Fix any mispair with the
+    dropdowns — nothing is graded until you confirm.</p>
+    {dropped}
+    <form method="post" action="/transcribe/sessions/{escape(session["id"])}/grade/confirm">
+      {_hidden_token(token)}
+      <table><tr><th>Page</th><th>OCR file</th></tr>{"".join(rows)}</table>
+      <p>Unmatched OCR files: {leftover}</p>
+      <p><button type="submit">Grade</button>
+         <a href="/transcribe/sessions/{escape(session["id"])}">Cancel</a></p>
+    </form>
+    """
+    return _document("Alignment preview — dpi-eval", body)
+
+
+def editor_page(session, page, draft, gt_text, token, position, notice=""):
+    initial = gt_text or draft
+    banner = ""
+    if session["mode"] == "corrected" and not gt_text:
+        banner = ('<p><strong>Machine draft below — correct it faithfully; '
+                  'the OCR is what’s being graded.</strong></p>')
+    notice_html = f"<p><em>{escape(notice)}</em></p>" if notice else ""
+    sid, n = session["id"], page["source_index"]
+    image_src = _safe_url(
+        f'{page["image_service"]}/full/!1200,1200/0/default.jpg'
+        if page.get("image_service")
+        else page.get("image_url")
+        or f"/transcribe/sessions/{sid}/images/{n}/full/!1200,1200/0/default.jpg")
+    full_src = _safe_url(
+        f'{page["image_service"]}/full/max/0/default.jpg'
+        if page.get("image_service")
+        else page.get("image_url")
+        or f"/transcribe/sessions/{sid}/images/{n}/full/max/0/default.jpg")
+    body = f"""
+    <h1>{escape(page["stem"])} <small>({position})</small></h1>
+    {notice_html}{banner}
+    <div style="display:flex; gap:1rem; align-items:flex-start">
+      <div style="flex:1">
+        <img id="page-image" src="{image_src}" alt="Page image for {escape(page["stem"])}"
+             style="max-width:100%; cursor:zoom-in"
+             onerror="this.alt='Image failed to load — retry or flag this page.'">
+        <p><button type="button" onclick="document.getElementById('lightbox').showModal()">Enlarge</button></p>
+        <dialog id="lightbox" style="max-width:95vw; max-height:95vh; overflow:auto">
+          <img src="{full_src}" alt="Full resolution page image">
+          <form method="dialog"><button>Close</button></form>
+        </dialog>
+      </div>
+      <form style="flex:1" method="post"
+            action="/transcribe/sessions/{sid}/pages/{n}">
+        {_hidden_token(token)}
+        <input type="hidden" name="action" value="save">
+        <input type="hidden" name="elapsed" id="elapsed" value="0">
+        <input type="hidden" name="active" id="active" value="0">
+        <input type="hidden" name="nonce" value="{secrets.token_hex(8)}">
+        <textarea name="text" rows="30" style="width:100%; font-family:monospace"
+                  spellcheck="false" autocorrect="off" autocapitalize="off"
+                  autocomplete="off">{escape(initial)}</textarea>
+        <p>Press Enter at the end of each printed line (line-for-line).</p>
+        <p><button type="submit">Save &amp; next</button></p>
+      </form>
+    </div>
+    <form method="post" action="/transcribe/sessions/{sid}/pages/{n}">
+      {_hidden_token(token)}
+      <input type="hidden" name="action" value="no_text">
+      <label>No text on this page:
+        <select name="reason">
+          <option value="">— pick why —</option>
+          <option value="blank">Blank page</option>
+          <option value="image_only">Image only</option>
+          <option value="illegible">Illegible</option>
+        </select></label>
+      <button type="submit">Mark</button>
+    </form>
+    <form method="post" action="/transcribe/sessions/{sid}/pages/{n}">
+      {_hidden_token(token)}
+      <input type="hidden" name="action" value="flag">
+      <label><input type="checkbox" name="flagged" {"checked" if page["flagged"] else ""}>
+        Flag for supervisor</label>
+      <input name="note" value="{escape(page["note"])}" placeholder="note">
+      <button type="submit">Update flag</button>
+    </form>
+    <p><a href="/transcribe/sessions/{sid}">Back to session</a></p>
+    <script>
+    (function () {{
+      var opened = Date.now(), lastInput = 0, active = 0;
+      var area = document.querySelector("textarea[name=text]");
+      area.addEventListener("input", function () {{
+        var now = Date.now();
+        if (lastInput && now - lastInput < 5000) active += now - lastInput;
+        lastInput = now;
+      }});
+      area.form.addEventListener("submit", function () {{
+        document.getElementById("elapsed").value = Math.round((Date.now() - opened) / 1000);
+        document.getElementById("active").value = Math.round(active / 1000);
+      }});
+    }})();
+    </script>
+    """
+    return _document(f"{page['stem']} — transcribe", body)

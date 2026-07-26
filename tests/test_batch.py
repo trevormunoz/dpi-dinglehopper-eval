@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 from dpi_eval.runner import run_batch
@@ -110,3 +111,61 @@ def test_empty_batch_exits_nonzero(tmp_path):
     result, code = run_batch(tmp_path / "gt", tmp_path / "ocr", tmp_path / "reports")
     assert code == 1
     assert result.succeeded == []
+
+
+def test_summarize_failure_does_not_discard_a_successful_run(
+    tmp_path, monkeypatch, caplog
+):
+    """S14: dinglehopper-summarize crashing on a malformed per-page report
+    must not raise CalledProcessError out of run_batch — the per-page
+    reports already written to disk (and result.succeeded) are still
+    usable and must survive, with the failure surfaced rather than
+    swallowed."""
+    gt_dir, ocr_dir = _setup_batch(tmp_path)
+    reports = tmp_path / "reports"
+
+    def fake_summarize(reports_dir):
+        raise subprocess.CalledProcessError(
+            1, ["dinglehopper-summarize"], stderr="boom: malformed report"
+        )
+
+    monkeypatch.setattr("dpi_eval.runner.summarize", fake_summarize)
+
+    with caplog.at_level("ERROR", logger="dpi_eval"):
+        result, code = run_batch(gt_dir, ocr_dir, reports)
+
+    # The per-page work already done must not be lost.
+    assert result.succeeded == ["page_0", "page_1"]
+    assert result.failed == []
+    assert (reports / "page_0.json").exists()
+    assert (reports / "page_1.json").exists()
+
+    # The failure must be visible, not silently dropped.
+    assert result.summary is None
+    assert result.summary_error is not None
+    assert code == 1
+    assert any(
+        "summar" in r.message.lower() and "boom" in r.message.lower()
+        for r in caplog.records
+    )
+
+
+def test_summarize_timeout_does_not_discard_a_successful_run(
+    tmp_path, monkeypatch
+):
+    """Companion to the CalledProcessError case: a hung engine must also be
+    tolerated, not just an immediate crash."""
+    gt_dir, ocr_dir = _setup_batch(tmp_path)
+    reports = tmp_path / "reports"
+
+    def fake_summarize(reports_dir):
+        raise subprocess.TimeoutExpired(["dinglehopper-summarize"], timeout=300)
+
+    monkeypatch.setattr("dpi_eval.runner.summarize", fake_summarize)
+
+    result, code = run_batch(gt_dir, ocr_dir, reports)
+
+    assert result.succeeded == ["page_0", "page_1"]
+    assert result.summary is None
+    assert result.summary_error is not None
+    assert code == 1

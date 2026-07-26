@@ -262,3 +262,161 @@ failure list only catches unreadable-at-the-OS-level inputs (see
 **Upstream candidate.** A dinglehopper `--strict-format` flag (error instead of
 plain-text fallback on unparseable XML) would let wrappers distinguish "bad
 recognition" from "bad file." Small, opt-in, mergeable.
+
+## 10. Desktop-pilot readiness — what shipping to non-technical users actually required
+
+**Source (2026-07-17 to 2026-07-20).** The desktop packaging plan
+(`docs/superpowers/specs/2026-07-17-dpi-eval-desktop-tauri-design.md`),
+its human-probe checklist, and the accessibility UX pass that followed.
+
+**Context.** `dpi-eval-web` (findings #5) proved the localhost-server
+shape works, but still asked HDC student workers to run a `uvx` command
+in a terminal. The desktop app's job was to remove that last barrier —
+double-click, no terminal, no CLI skills — while changing nothing about
+the grading engine itself.
+
+**Shell decision.** A Tauri v2 shell wrapping the same FastAPI app was
+chosen over PyInstaller-style single-binary freezing specifically
+because the trust-UX risk (Gatekeeper/SmartScreen behavior on managed
+lab machines) needed to be probed empirically before committing, and
+Tauri's smaller bundle made that probe cheap to iterate on. The probe
+confirmed the risk was real but survivable: an unsigned build on macOS
+15 first showed a hard-blocking "damaged" dialog with no escape hatch,
+which ad-hoc signing (`signingIdentity: "-"`) reclassified into the
+standard "unidentified developer" dialog with a working Open Anyway
+path — friction, not a block. That distinction is exactly what changed
+between the checklist's original wording and the README's final
+troubleshooting language: what ships is the ad-hoc-signed, friction-pass
+build, not the earlier hard-blocked one.
+
+**The Windows JSON-escape bug.** Once packaging cleared macOS, Windows
+CI failed every real grade with `dinglehopper-summarize` exiting 1. The
+first hypothesis — piped stdio forcing cp1252 encoding on non-ASCII
+report text — was tested and refuted directly (console and piped runs
+both passed when paths were relative). The actual root cause:
+dinglehopper's `report.json.j2` template interpolates GT/OCR paths into
+JSON without escaping them (`"gt": "{{ gt }}"`, no `|tojson`), so any
+Windows absolute path — which always contains backslashes — produces
+invalid JSON (`\U` is not a legal escape). Every real Windows grade hit
+this; only relative, forward-slash paths (as in most test fixtures)
+mask it, which is why it survived undetected upstream and in this
+repo's own CI until a real absolute-path run exercised it. The fix
+lives on our side of the fence: `run_page` now passes `gt.as_posix()`
+and `ocr.as_posix()` to the dinglehopper subprocess, which produces
+forward-slash paths dinglehopper can round-trip regardless of the
+template bug. A draft upstream issue is written up at
+`docs/upstream/dinglehopper-report-json-escape.md`, proposing the
+one-line `|tojson` fix that would make our workaround unnecessary
+(the `differences` dict already uses `|tojson`, so the template already
+has the convention it needs, just not applied consistently).
+
+**What it means for the program.** This is the same lesson as findings
+#7 and #9, restated a third time: dinglehopper was built and tested
+against a narrower shape of input than DPI's real usage produces (there,
+line-wrapped ground truth and unparseable-but-plain-text-readable XML;
+here, Windows-native absolute paths). A tool this program depends on for
+QA needs its edge cases probed against real deployment conditions, not
+assumed from its own test suite — and workarounds belong in the wrapper
+only until upstream can absorb the fix.
+
+**The unused `--differences` statistics.** A late usability pass — after
+grading a real multi-page batch with visibly repeated OCR mistakes —
+found that the batch summary report was effectively empty: only
+averages and blank space, no detail. The cause: `runner.py` never passed
+dinglehopper's `--differences` flag to the CLI, so the per-page JSON
+reports never carried the `differences` dict dinglehopper is capable of
+producing, and the summary's own common-mistakes aggregation had
+nothing to aggregate. The batch summary had never actually shown what it
+was designed to show. Passing `--differences 1` (a Click boolean *value*
+option, not a bare flag — confirmed empirically, since the CLI source
+doesn't mark it `is_flag`) unlocked it: the summary report now includes
+sortable tables of the most common character- and word-level mistakes
+across the whole batch (e.g. "e→c" happening three times), which is
+exactly the "where does the OCR engine systematically go wrong" view a
+supervisor or curator needs to judge whether a vendor's OCR is fit for
+purpose — not just a single aggregate error rate.
+
+**Accessibility outcome.** The UX pass that followed (nineteen findings
+from a two-lens critique, implemented and then re-verified) closed with
+a full keyboard-only walkthrough of the real desktop app: folder
+selection, grading, results, and a deliberately triggered pairing error
+were all completed without a mouse, with focus landing correctly on the
+error region and the live-region status announcements firing once
+rather than on every tick. That walkthrough is the concrete evidence
+behind treating the pilot build as accessibility-ready for its own
+interface — separate from, and prerequisite to, the tool's larger job of
+judging OCR text's accessibility as a *content* concern.
+
+**Status.** All three threads (shell/signing, Windows path fix,
+`--differences` unlock) are landed and CI-verified on both platforms;
+the UX pass is implemented and gate-passed. Pilot documentation
+(README) followed this entry.
+
+## 11. Transcription editor — implemented per spec, pilot evidence hooks now in place
+
+**Source (2026-07-25).** `docs/superpowers/specs/2026-07-24-transcription-editor-design.md`.
+
+**What shipped.** The transcription editor described in the spec is
+implemented: sessions started from a local image folder or a IIIF
+manifest (v2/v3), source-as-queue page selection at create, line-for-line
+typing under a versioned conventions record (`v1`), no-text pages marked
+with a required reason (blank / image_only / illegible), flag-for-
+supervisor, alignment-staged grading through the existing engine
+(unmatched pages excluded from scoring, mispairs fixable by dropdown
+before confirming), clone-other-arm for the two-arm pilot design,
+collection-labeled zip export for the GT repository, and a per-launch
+token guarding both the desktop and web entry points.
+
+**Pilot evidence hooks.** Four things are now recorded automatically so
+the pilot's evidence plan doesn't depend on remembering to log them by
+hand: per-page `seconds_elapsed` and `seconds_active` on every save (and
+shown on the session page, not just stored), the no-text reason taken at
+face value as a data-quality signal rather than inferred after the fact,
+the conventions version (`v1`) stamped onto each session so a future
+convention change doesn't silently mix incompatible ground truth, and
+which arm (of the two-arm pilot) produced a given session recorded with
+it.
+
+**Status.** Implemented and unit-tested; manual desktop QA (JP2 master
+folder session, IIIF session against a real UMD manifest, smart-quote
+substitution check, no-text/illegible marking, alignment override,
+export inspection) is still pending — see the task-12 report for the
+checklist.
+
+## 12. IIIF manifest parsing stays hand-rolled through the pilot — with an adopt trigger
+
+**Source (2026-07-25).** Review challenge during the transcription-editor
+build ("we should not have rolled our own parser when there are maintained
+parsers from IIIF available"), resolved with a dependency-resolution check
+against PyPI rather than assertion.
+
+**The challenge is half-right.** `iiif-prezi3` — the IIIF community's
+official Python library for Presentation v3 — is actively maintained
+(3.1.1, released 2026-05-14), pydantic-based (pydantic is already in our
+tree via FastAPI), and would cost roughly one wheel. The original
+"offline wheelhouse blocks it" argument was about iiif_ocr's
+PaddleOCR/OpenCV chain and does not apply to this library. Two measured
+facts kept the hand-rolled parser anyway, for now:
+
+1. **It parses the version we don't receive.** iiif-prezi3 is v3-only.
+   UMD's collections serve Presentation v2 (the reason iiif_ocr is
+   functionally v2-only), and the official v2 ecosystem is dormant: the
+   `iiif-prezi` v2 library is unmaintained and the official v2-to-v3
+   upgrader is not published on PyPI at all. Adopting the maintained
+   parser would replace our speculative v3 branch and leave the
+   load-bearing v2 branch hand-rolled regardless.
+2. **It pins `Pillow<=12.0.0`.** A dry-run resolution shows adoption
+   today would downgrade Pillow 12.3.0 to 12.0.0 — trading patch
+   releases of the codec stack that decodes the pilot's JP2 masters for
+   a parser of manifests we don't receive.
+
+**Adopt trigger (decision, Trevor 2026-07-25).** Keep the hand-rolled
+parser through the pilot. Swap the v3 branch to iiif-prezi3 when either
+UMD serves Presentation v3 or the Pillow ceiling lifts — whichever comes
+first; the v2 branch retires when v2 does. `tests/test_iiif.py` is the
+contract for the swap. Trevor is separately looking into why UMD still
+serves v2. The honest cost of the interim position is on record: task
+reviews, not our own tests, caught the Choice-body, null-label, and
+canvas-count-drift gaps a maintained parser might have handled — if UMD
+manifests keep finding parser gaps during the pilot, that is additional
+pressure toward the trigger.

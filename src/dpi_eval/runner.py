@@ -11,15 +11,36 @@ from dpi_eval.pairing import discover_pairs
 
 logger = logging.getLogger("dpi_eval")
 
+# dinglehopper's word/character alignment is a Python OCR-comparison engine;
+# a normal page finishes in well under a few seconds, but a pathological
+# input (huge diff, garbled encoding) could run long. 120s is generous
+# headroom above anything a real page needs, while still guaranteeing a
+# FastAPI threadpool worker isn't pinned forever by a hung engine (S14).
+RUN_PAGE_TIMEOUT_S = 120
+
+# dinglehopper-summarize walks every per-page report already written for the
+# batch; batches can run to hundreds of pages, so it gets more headroom than
+# a single-page comparison, not less.
+SUMMARIZE_TIMEOUT_S = 300
+
 
 def run_page(gt: Path, ocr: Path, reports_dir: Path, prefix: str) -> Path:
     """Grade one OCR file against one GT file. Returns path to the JSON report."""
     reports_dir.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["dinglehopper", str(gt), str(ocr), prefix, str(reports_dir)],
+        [
+            "dinglehopper",
+            gt.as_posix(),
+            ocr.as_posix(),
+            prefix,
+            str(reports_dir),
+            "--differences",
+            "1",
+        ],
         check=True,
         capture_output=True,
         text=True,
+        timeout=RUN_PAGE_TIMEOUT_S,
     )
     return reports_dir / f"{prefix}.json"
 
@@ -31,6 +52,7 @@ def summarize(reports_dir: Path) -> Path:
         check=True,
         capture_output=True,
         text=True,
+        timeout=SUMMARIZE_TIMEOUT_S,
     )
     return reports_dir / "summary.json"
 
@@ -41,6 +63,10 @@ class BatchResult:
     failed: list = field(default_factory=list)
     missing: list = field(default_factory=list)
     summary: Path | None = None
+    # Set when dinglehopper-summarize itself failed or hung (S14). Per-page
+    # reports and result.succeeded are still valid and usable even when this
+    # is set — only the batch-wide rollup is missing.
+    summary_error: str | None = None
 
 
 def run_batch(
@@ -82,9 +108,22 @@ def run_batch(
             result.failed.append(stem)
 
     if result.succeeded:
-        result.summary = summarize(reports_dir)
+        try:
+            result.summary = summarize(reports_dir)
+        except Exception as exc:  # same tolerate-and-report policy as :85 —
+            # a malformed rollup must not discard the per-page work already
+            # collected and written to disk.
+            detail = (getattr(exc, "stderr", None) or "").strip()
+            last_line = detail.splitlines()[-1] if detail else ""
+            suffix = f" — {last_line}" if last_line else ""
+            logger.error("summarize failed for %s: %s%s", reports_dir, exc, suffix)
+            result.summary_error = f"{exc}{suffix}"
 
     failure_rate = len(result.failed) / len(pairs)
+    if result.summary_error:
+        # The batch-wide rollup never happened, so this run cannot be
+        # reported as a clean success even if every page graded fine.
+        return result, 1
     if failure_rate > max_failure_rate:
         logger.error(
             "failure rate %.0f%% exceeds threshold %.0f%%",

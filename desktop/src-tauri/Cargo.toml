@@ -1,0 +1,40 @@
+[package]
+name = "dpi-eval-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+# tauri floor 2.11.1: GHSA-7gmj-67g7-phm9 / CVE-2026-42184 (origin-confusion
+# IPC bypass on the remote-origin surface this app uses). Lock resolves 2.11.5.
+[dependencies]
+tauri = { version = "2.11.1", features = [] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = "2"
+# Native "download saved" acknowledgment, fired from Rust (the shell owns UX
+# feedback; the webview is a renderer only). Rust-side calls go through the
+# NotificationExt trait, not IPC, so no capability grant is required.
+tauri-plugin-notification = "2"
+# OS CSPRNG for the per-launch sidecar token (already in the dep tree via
+# transitive deps; used directly here). A guessable source (time+pid hash)
+# would defeat the localhost token guard the token exists to provide.
+getrandom = "0.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Feature audit (windows 0.61.3 source, src/Windows/Win32/System/JobObjects/mod.rs):
+# - CreateJobObjectW: #[cfg(feature = "Win32_Security")] (SECURITY_ATTRIBUTES param)
+# - JOBOBJECT_EXTENDED_LIMIT_INFORMATION: #[cfg(feature = "Win32_System_Threading")]
+#   (IO_COUNTERS field lives in Win32::System::Threading)
+# - AssignProcessToJobObject / SetInformationJobObject / JOBOBJECTINFOCLASS consts /
+#   JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: module gate only (Win32_System_JobObjects)
+# - CloseHandle / HANDLE: Win32_Foundation (also implied transitively by any Win32_*)
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

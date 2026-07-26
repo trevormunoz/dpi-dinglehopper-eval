@@ -448,24 +448,32 @@ rm payload/python.tar.gz
 echo "fetched $VERSION for $TRIPLE"
 ```
 
-`desktop/runtime/build_wheelhouse.sh`:
+`desktop/runtime/build_wheelhouse.sh` (amended after Task 3's finding:
+`dpi_eval.adapter` imports lxml at module scope, so the probe venv needs
+the lxml wheel; downloads are wheels-only — sdists would force compiles
+on student machines; pip is the bundled interpreter's own, so
+fetch_python.sh must run first):
 
 ```bash
 #!/usr/bin/env bash
-# Build the offline wheelhouse. --probe = just this repo's wheel + its web deps,
-# minus dinglehopper (probe sidecar carries no ocrd weight).
+# Build the offline wheelhouse (wheels only). --probe = this repo's wheel +
+# the minimal web deps (fastapi/uvicorn/python-multipart/lxml — lxml because
+# dpi_eval.adapter imports it at module scope), minus dinglehopper.
 set -euo pipefail
 cd "$(dirname "$0")"
 REPO_ROOT="$(cd ../.. && pwd)"
 MODE="${1:-full}"
 OUT="payload/wheelhouse"
+if [ -x payload/cpython/bin/python3 ]; then PY=payload/cpython/bin/python3
+elif [ -x payload/cpython/python.exe ]; then PY=payload/cpython/python.exe
+else echo "run fetch_python.sh first" >&2; exit 1; fi
 rm -rf "$OUT"; mkdir -p "$OUT"
 (cd "$REPO_ROOT" && uv build --wheel --out-dir "$PWD/desktop/runtime/$OUT")
 if [ "$MODE" = "--probe" ]; then
-  uv pip download fastapi uvicorn python-multipart -d "$OUT" >/dev/null
+  "$PY" -m pip download --only-binary :all: fastapi uvicorn python-multipart lxml -d "$OUT" >/dev/null
 else
   (cd "$REPO_ROOT" && uv export --no-dev --no-emit-project --format requirements-txt) > "$OUT/requirements.txt"
-  uv pip download -r "$OUT/requirements.txt" -d "$OUT" >/dev/null
+  "$PY" -m pip download --only-binary :all: -r "$OUT/requirements.txt" -d "$OUT" >/dev/null
 fi
 PKG="dpi-dinglehopper-eval"
 HASH=$(ls "$OUT" | sort | shasum -a 256 | cut -d' ' -f1)
@@ -474,7 +482,7 @@ if [ "$MODE" = "--probe" ]; then echo probe >> "$OUT/MANIFEST"; fi
 echo "wheelhouse ($MODE): $(ls "$OUT" | wc -l | tr -d ' ') files"
 ```
 
-`chmod +x desktop/runtime/*.sh`. (If `uv pip download` is unavailable in the installed uv version, substitute `python -m pip download` from any venv — record which you used.)
+`chmod +x desktop/runtime/*.sh`.
 
 - [ ] **Step 2: Verify locally**
 
@@ -492,7 +500,7 @@ Expected: Python 3.12.8 prints; wheelhouse contains `dpi_dinglehopper_eval-*.whl
 ```bash
 desktop/runtime/payload/cpython/bin/python3 -m venv /tmp/probe-venv
 /tmp/probe-venv/bin/pip install --no-index --find-links desktop/runtime/payload/wheelhouse --no-deps dpi-dinglehopper-eval
-/tmp/probe-venv/bin/pip install --no-index --find-links desktop/runtime/payload/wheelhouse fastapi uvicorn python-multipart
+/tmp/probe-venv/bin/pip install --no-index --find-links desktop/runtime/payload/wheelhouse fastapi uvicorn python-multipart lxml
 /tmp/probe-venv/bin/dpi-eval-web --help
 ```
 
@@ -583,7 +591,7 @@ jobs:
           fi
           "$PY" -m venv probe-venv
           "$BIN/pip" install --no-index --find-links desktop/runtime/payload/wheelhouse --no-deps dpi-dinglehopper-eval
-          "$BIN/pip" install --no-index --find-links desktop/runtime/payload/wheelhouse fastapi uvicorn python-multipart
+          "$BIN/pip" install --no-index --find-links desktop/runtime/payload/wheelhouse fastapi uvicorn python-multipart lxml
           "$BIN/dpi-eval-web" --help
       - name: Install tauri-cli
         run: cargo install tauri-cli --version '^2' --locked
@@ -665,6 +673,60 @@ git add desktop/runtime/ && git diff --cached --quiet || git commit -m "feat(des
 - [ ] **Step 2:** In the window: pick `tests/fixtures/text` as both GT and OCR folders, Run, confirm the results page (WER 12.5% on the fixture), open a per-page diff, download the zip. Confirm `webkitdirectory` folder pickers behave in WKWebView — **if the picker fails here, this is the spec's contingency trigger: STOP and report; the native-dialog endpoint needs a spec amendment first.**
 - [ ] **Step 3:** Quit mid-grade on a re-run; verify no surviving `dinglehopper`/`dpi-eval-web` processes.
 - [ ] **Step 4:** Commit any wiring fixes: `git add -A desktop/ && git diff --cached --quiet || git commit -m "fix(desktop): product tracer wiring"`
+
+---
+
+### Task 9b: Native-picker contingency (spec amendment 2026-07-18, approved)
+
+Added mid-cycle: the macOS tracer failed (WKWebView drops the
+webkitdirectory form POST — WebKit-level, no fix in flight). The spec's
+amendment (commit 78e00fe) authorizes native pickers on both desktop
+OSes feeding a `POST /grade-paths` directory-read endpoint. Full
+authorized shape, constraints, and sourced footguns live in the spec
+amendment — implementers read it first. Engine files remain untouchable.
+
+**Pinned cross-component contracts (all three steps build to these):**
+- Env var `DPI_EVAL_TOKEN`: random 32-hex token minted by the shell per
+  launch, passed to the sidecar's environment. Absent env ⇒
+  `/grade-paths` always 403 (uvx mode).
+- Request: `POST /grade-paths`, JSON `{"gt_dir": str, "ocr_dir": str}`,
+  header `X-DPI-Eval-Token` must equal the env token (403 otherwise).
+- Responses: 200 `{"run_url": "/runs/run-NNN"}`; validation/read
+  failures 400 `{"error": str}` (fail loud, never partial); bad/missing
+  token 403.
+- Host guard (app-wide middleware): reject requests whose `Host` is not
+  `127.0.0.1:<bound port>` or `localhost:<bound port>` with 403.
+- Token reaches the page as `<meta name="dpi-eval-token" content="…">`,
+  emitted only when the env token exists.
+- Page detection: probe `window.__TAURI__` inside the `load` handler
+  (never top-level); dialog call `window.__TAURI__.dialog.open({directory: true})`.
+- Capability: `remote.urls: ["http://127.0.0.1:*/*"]`, permission
+  `dialog:allow-open` only.
+
+- [ ] **Step 1 (sonnet, parallel with Step 2) — server endpoint.**
+  Files: `src/dpi_eval/web.py`, `tests/` (new test file ok). TDD.
+  Refactor `/grade`'s validation+save into a shared pipeline both
+  endpoints call (dotfile drop → .gt.txt/empty-OCR checks → collision
+  check → save flat), then `/grade-paths` per contracts: readable-dir
+  checks, files-only recursive enumeration (symlinked files read
+  through, symlinked dirs not followed), token + JSON body, plus the
+  app-wide Host middleware. `uv run pytest` green (40 existing + new).
+- [ ] **Step 2 (opus — version-sensitive Tauri, parallel with Step 1) —
+  shell wiring.** Files: `desktop/src-tauri/` only (Cargo.toml: add
+  `tauri-plugin-dialog`, floor `tauri = "2.11.1"`; tauri.conf.json:
+  `withGlobalTauri: true`; `capabilities/`: remote capability per
+  contract; `lifecycle.rs`: mint token, inject `DPI_EVAL_TOKEN` into
+  sidecar env). Verify mechanism against current Tauri v2 docs, not
+  memory. `cargo test` + `cargo build` clean.
+- [ ] **Step 3 (sonnet, after Steps 1–2 land) — picker variant.**
+  Files: `src/dpi_eval/pages.py` (+ its tests). Feature-detected picker
+  UI per contracts, a11y parity per amendment (`aria-live` errors,
+  focus management, labelled path display, announced Run state).
+  Browser-served page byte-identical when no token/meta present.
+- [ ] **Step 4 (human gate):** re-run the in-window tracer on macOS
+  (Trevor): pick fixtures via native dialogs, expect WER 12.5%,
+  per-page diff, zip. Then quit-mid-grade orphan re-check. Windows
+  probe checklist gains the native-picker step at RC time.
 
 ---
 

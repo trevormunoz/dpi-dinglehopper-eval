@@ -1,0 +1,170 @@
+name: desktop
+on:
+  push:
+    branches: [feat/dpi-eval-desktop, main]
+    # paths + paths-ignore cannot combine on one event (GitHub docs); a trailing
+    # '!' exclusion skips rebuilds for markdown-only changes. branches and
+    # tags are OR'd together as the ref filter, then ANDed with paths — BUT
+    # GitHub computes the paths diff against the ref's previous state, and a
+    # freshly created tag has no previous state to diff against, so a
+    # `desktop-v*` tag push always matches the paths filter trivially (all
+    # files at that SHA count as "changed") and the bundle job still runs.
+    tags:
+      - 'desktop-v*'
+    paths:
+      - desktop/**
+      - src/**
+      - pyproject.toml
+      - uv.lock
+      - .github/workflows/desktop.yml
+      - '!**/*.md'
+  workflow_dispatch:
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build runtime payload (full)
+        shell: bash
+        # Full mode (~84 files / ~90MB wheelhouse) resolves the whole
+        # dependency closure incl. ocrd-stack, so this step runs meaningfully
+        # longer than the probe did; no explicit step timeout is set here
+        # (falls back to the job/workflow default), matching prior behavior.
+        run: |
+          desktop/runtime/fetch_python.sh
+          desktop/runtime/build_wheelhouse.sh
+      - name: Grade-over-HTTP smoke test
+        shell: bash
+        # "only the sentinel knows the port": _pick_port() in web.py prefers
+        # 8765 but falls back to an ephemeral port, so the server's own
+        # stdout sentinel line ("dpi-eval-web running at <url>") is the only
+        # source of truth for the URL — never assume 8765.
+        run: |
+          if [ -x desktop/runtime/payload/cpython/bin/python3 ]; then
+            PY=desktop/runtime/payload/cpython/bin/python3; BIN=smoke-venv/bin
+          else
+            PY=desktop/runtime/payload/cpython/python.exe; BIN=smoke-venv/Scripts
+          fi
+          "$PY" -m venv smoke-venv
+          "$BIN/pip" install --no-index --find-links desktop/runtime/payload/wheelhouse dpi-dinglehopper-eval
+
+          # The engine invokes `dinglehopper` by bare name (PATH lookup) —
+          # same trap the desktop shell fixed in its sidecar spawn. Without
+          # this the grade 303s but every page fails with [Errno 2]/[WinError 2]
+          # and the graded-result assertion below (correctly) fails the job.
+          export PATH="$PWD/$BIN:$PATH"
+
+          # Hardening, not a bug fix: the historical Windows summarize failure
+          # was invalid JSON from backslash paths (fixed in runner.py via
+          # as_posix; upstream report in docs/upstream/). UTF-8 mode stays
+          # because dinglehopper reads report JSON with locale-default open()
+          # (cp1252 on Windows) and real transcriptions contain non-ASCII the
+          # ASCII fixture cannot exercise. No-op on POSIX runners.
+          export PYTHONUTF8=1
+
+          # /grade requires the launch token (PAR C2). main() mints one when
+          # DPI_EVAL_TOKEN is unset and never prints it, so the harness must
+          # supply its own to authenticate the curl below. Static literal:
+          # no workflow input reaches this value.
+          export DPI_EVAL_TOKEN=ci-smoke-token
+
+          LOG=server.log
+          "$BIN/dpi-eval-web" --no-browser >"$LOG" 2>&1 &
+          SERVER_PID=$!
+
+          URL=""
+          for _ in $(seq 1 60); do
+            if grep -q "dpi-eval-web running at " "$LOG" 2>/dev/null; then
+              URL=$(grep "dpi-eval-web running at " "$LOG" | head -1 | sed -E 's/.*running at (http:\/\/[^ ]+).*/\1/')
+              break
+            fi
+            sleep 1
+          done
+
+          if [ -z "$URL" ]; then
+            echo "server did not print its sentinel line within 60s" >&2
+            cat "$LOG" >&2
+            kill "$SERVER_PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          RESPONSE=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' \
+            -H "X-DPI-Eval-Token: $DPI_EVAL_TOKEN" \
+            -F "gt_files=@tests/fixtures/text/page_0.gt.txt;type=text/plain" \
+            -F "ocr_files=@tests/fixtures/text/page_0.txt;type=text/plain" \
+            "$URL/grade")
+          STATUS=${RESPONSE%% *}
+          REDIRECT_URL=${RESPONSE#* }
+
+          if [ "$STATUS" != "303" ]; then
+            echo "expected 303 from /grade, got $STATUS" >&2
+            cat "$LOG" >&2
+            kill "$SERVER_PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          # /grade 303s even when every page FAILS to grade (per-page
+          # failures land in result.json and the results page), so the
+          # redirect alone proves nothing — follow it and assert the
+          # success marker and the absence of the failure section
+          # ("Pages that failed to grade"). Contract with pages.py
+          # results_page: the verdict block (class="verdict") renders
+          # only when exit_code == 0; the stylesheet's .verdict selector
+          # cannot false-match this fixed-string grep.
+          BODY=$(curl -s "$REDIRECT_URL")
+          if ! printf '%s' "$BODY" | grep -qF 'class="verdict"' \
+             || printf '%s' "$BODY" | grep -qF "Pages that failed to grade"; then
+            echo "results page does not show a clean graded run:" >&2
+            printf '%s\n' "$BODY" >&2
+            cat "$LOG" >&2
+            kill "$SERVER_PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "grade smoke test OK ($STATUS, graded 1 page)"
+          kill "$SERVER_PID" 2>/dev/null || true
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version '^2' --locked
+      - name: Bundle
+        working-directory: desktop/src-tauri
+        run: cargo tauri build
+      # Flatten into dist-artifacts/ so the artifact zip unzips directly to the
+      # installer file (upload-artifact otherwise preserves dmg/ and nsis/ dirs).
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          mkdir -p dist-artifacts
+          find desktop/src-tauri/target/release/bundle -name '*.dmg' -exec cp {} dist-artifacts/ \;
+          find desktop/src-tauri/target/release/bundle -name '*setup.exe' -exec cp {} dist-artifacts/ \;
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.os }}
+          path: dist-artifacts/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          path: dist-artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            dist-artifacts/*.dmg
+            dist-artifacts/*setup.exe

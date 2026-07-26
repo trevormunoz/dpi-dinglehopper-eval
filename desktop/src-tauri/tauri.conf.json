@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "dpi-eval",
+  "version": "0.1.0",
+  "identifier": "edu.umd.dpi-eval",
+  "app": {
+    "withGlobalTauri": true,
+    "security": { "csp": null }
+  },
+  "build": { "frontendDist": "../ui" },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": { "nsis": { "installMode": "currentUser" } },
+    "macOS": { "signingIdentity": "-" },
+    "resources": { "../runtime/payload/": "runtime/" }
+  }
+}
