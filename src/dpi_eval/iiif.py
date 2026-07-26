@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from dataclasses import dataclass
+from pathlib import Path
 
 
 class IIIFError(Exception):
@@ -69,22 +70,53 @@ except PackageNotFoundError:  # running from a source tree, not installed
 DEFAULT_USER_AGENT = f"dpi-eval/{_VERSION} (+OCR evaluation harness)"
 
 
-def _user_agent() -> str:
-    """The User-Agent to send with a manifest fetch.
+def _config_path() -> Path:
+    """Where a deployed User-Agent override lives.
 
-    Defaults to identifying ourselves honestly. It is overridable because
-    institutional IIIF servers sit behind a WAF that filters on this header,
-    and UMD's answers 400 to `Python-urllib/3.11` *and* to an honest
-    `dpi-eval/…` — only a browser-shaped string gets through. Mimicking a
-    browser by default would make our traffic indistinguishable from a
-    student's in the logs that would want to tell them apart, so the honest
-    value stays the default and the operator opts into the workaround.
-
-    A blank override falls back rather than sending an empty header: no
-    User-Agent at all draws a 403 from the same WAF.
+    Alongside the user's runs, which the UI already names as "the
+    dpi-eval-runs folder in your home folder" (see pages.py), rather than a
+    dotfile they would never find. Python resolves it in both run modes, so
+    the desktop shell needs no settings surface of its own.
     """
-    configured = (os.environ.get("DPI_EVAL_USER_AGENT") or "").strip()
-    return configured or DEFAULT_USER_AGENT
+    return Path.home() / "dpi-eval-runs" / "config.json"
+
+
+def _config_user_agent() -> str:
+    """F11: an env var is unreachable from a double-clicked .app — launchd
+    hands GUI apps a minimal environment, so a shell `export` never reaches
+    the sidecar, and the desktop app is how students run this.
+
+    Every failure here degrades to "" so the caller falls back to the honest
+    default. A hand-edited config must never be able to break manifest
+    fetching, and a blank value must not become a blank header — no
+    User-Agent at all draws a 403 from the same WAF that rejects an
+    unrecognised one.
+    """
+    try:
+        raw = json.loads(_config_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(raw, dict):
+        return ""
+    value = raw.get("user_agent")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _user_agent() -> str:
+    """The User-Agent to send with a manifest fetch: env, then config file,
+    then an honest default.
+
+    Overridable because institutional IIIF servers sit behind a WAF that
+    filters on this header, and UMD's answers 400 to `Python-urllib/3.11`
+    *and* to an honest `dpi-eval/…` — only a browser-shaped string gets
+    through. Mimicking a browser by default would make our traffic
+    indistinguishable from a student's in the logs that would want to tell
+    them apart, so the honest value stays the default and the operator opts
+    into the workaround. The env var wins so a one-off run can override a
+    deployed config without editing it.
+    """
+    from_env = (os.environ.get("DPI_EVAL_USER_AGENT") or "").strip()
+    return from_env or _config_user_agent() or DEFAULT_USER_AGENT
 
 
 def fetch_manifest(url: str, timeout: float = 30.0) -> dict:
@@ -118,11 +150,15 @@ def fetch_manifest(url: str, timeout: float = 30.0) -> dict:
         # that is fine. Name the override on the codes a filter actually uses.
         hint = ""
         if exc.code in (400, 401, 403, 406, 429):
+            # Name the file as well as the env var: the env var is useless
+            # advice to anyone running the desktop app, where a shell export
+            # never reaches the sidecar (F11).
             hint = (
                 f" The server may be filtering on User-Agent (we sent "
                 f"{_user_agent()!r}). If this manifest opens in a browser, set "
-                "DPI_EVAL_USER_AGENT to a value the server accepts and try "
-                "again.")
+                "a value the server accepts — either the DPI_EVAL_USER_AGENT "
+                f'environment variable, or {{"user_agent": "…"}} in '
+                f"{_config_path()} — and try again.")
         raise IIIFError(
             f"Could not fetch manifest {url}: HTTP {exc.code} "
             f"{exc.reason}.{hint}") from exc

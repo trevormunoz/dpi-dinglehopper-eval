@@ -123,16 +123,32 @@ what you'll be asked to transcribe.
 `403`:** the repository is probably behind a web application firewall that
 filters on `User-Agent`. dpi-eval identifies itself honestly as
 `dpi-eval/<version>`, and some WAFs reject anything they don't recognise —
-including that. Override it:
+including that. UMD's own `iiif.lib.umd.edu` does.
+
+**In the desktop app**, create or edit `config.json` in your `dpi-eval-runs`
+folder (the same folder the app stores runs in):
+
+```json
+{"user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+```
+
+Restart the app afterwards. An environment variable will *not* work here: when
+you launch a Mac app from the Dock or Finder it does not inherit your Terminal's
+environment, so `export` never reaches it.
+
+**From the command line or `dpi-eval-web`**, either the file above works, or:
 
 ```bash
 export DPI_EVAL_USER_AGENT='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
 ```
 
-UMD's own `iiif.lib.umd.edu` needs this. The better long-term fix is to ask
-whoever runs the WAF to allow a named agent, which keeps our traffic
-distinguishable from a browser's in the logs; the override exists so you are
-not blocked while that conversation happens.
+The environment variable wins over the file, so you can override a deployed
+config for one run without editing it. A missing or malformed `config.json` is
+ignored rather than treated as an error.
+
+The better long-term fix is to ask whoever runs the WAF to allow a named agent,
+which keeps our traffic distinguishable from a browser's in the logs. The
+override exists so you are not blocked while that conversation happens.
 
 ### Typing a page
 

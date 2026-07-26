@@ -283,6 +283,90 @@ def test_fetch_manifest_blank_user_agent_falls_back_to_the_default(monkeypatch):
     assert seen[0].get_header("User-agent").startswith("dpi-eval/")
 
 
+def _config(monkeypatch, tmp_path, payload):
+    """Point _config_path at a temp file holding `payload` (str written as-is)."""
+    from dpi_eval import iiif as iiif_module
+
+    path = tmp_path / "config.json"
+    path.write_text(payload, encoding="utf-8")
+    monkeypatch.setattr(iiif_module, "_config_path", lambda: path)
+    return path
+
+
+def test_user_agent_reads_the_config_file_when_the_env_is_unset(
+        monkeypatch, tmp_path):
+    """F11: a macOS .app launched from the Dock gets a minimal launchd
+    environment, so a shell `export` never reaches the sidecar. The desktop app
+    is how students run this, so an env-only override is unreachable there."""
+    from dpi_eval.iiif import _user_agent
+
+    monkeypatch.delenv("DPI_EVAL_USER_AGENT", raising=False)
+    _config(monkeypatch, tmp_path, '{"user_agent": "Mozilla/5.0 (from file)"}')
+    assert _user_agent() == "Mozilla/5.0 (from file)"
+
+
+def test_env_wins_over_the_config_file(monkeypatch, tmp_path):
+    """Precedence is env > file > honest default, so a one-off run can override
+    a deployed config without editing it."""
+    from dpi_eval.iiif import _user_agent
+
+    monkeypatch.setenv("DPI_EVAL_USER_AGENT", "from-env")
+    _config(monkeypatch, tmp_path, '{"user_agent": "from-file"}')
+    assert _user_agent() == "from-env"
+
+
+@pytest.mark.parametrize("payload", [
+    "{not json at all",
+    '{"user_agent": ""}',
+    '{"user_agent": "   "}',
+    '{"user_agent": 42}',
+    '{"other_key": "x"}',
+    "[]",
+])
+def test_unusable_config_falls_back_to_the_default(
+        monkeypatch, tmp_path, payload):
+    """A hand-edited config must never break manifest fetching: a broken file
+    degrades to the honest default rather than raising, or sending an empty
+    header (which draws a 403 from the same WAF)."""
+    from dpi_eval.iiif import DEFAULT_USER_AGENT, _user_agent
+
+    monkeypatch.delenv("DPI_EVAL_USER_AGENT", raising=False)
+    _config(monkeypatch, tmp_path, payload)
+    assert _user_agent() == DEFAULT_USER_AGENT
+
+
+def test_missing_config_file_is_not_an_error(monkeypatch, tmp_path):
+    from dpi_eval import iiif as iiif_module
+    from dpi_eval.iiif import DEFAULT_USER_AGENT, _user_agent
+
+    monkeypatch.delenv("DPI_EVAL_USER_AGENT", raising=False)
+    monkeypatch.setattr(
+        iiif_module, "_config_path", lambda: tmp_path / "absent.json")
+    assert _user_agent() == DEFAULT_USER_AGENT
+
+
+def test_waf_message_names_both_the_env_var_and_the_config_file(
+        monkeypatch, tmp_path):
+    """The env var alone is useless advice to someone running the desktop app,
+    so the error has to name the file too."""
+    import urllib.error
+
+    from dpi_eval import iiif as iiif_module
+
+    monkeypatch.delenv("DPI_EVAL_USER_AGENT", raising=False)
+    path = _config(monkeypatch, tmp_path, "{}")
+
+    def fake_open(req, data=None, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(iiif_module._opener, "open", fake_open)
+    with pytest.raises(IIIFError) as excinfo:
+        fetch_manifest("https://iiif.example.edu/m/1")
+    message = str(excinfo.value)
+    assert "DPI_EVAL_USER_AGENT" in message
+    assert str(path) in message
+
+
 def test_fetch_manifest_explains_a_probable_waf_rejection(monkeypatch):
     """A bare '400 Bad Request' sends the user hunting for a broken URL, when
     the real cause is a filter that never looked at the URL. The error has to
