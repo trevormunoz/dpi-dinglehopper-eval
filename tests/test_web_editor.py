@@ -59,7 +59,15 @@ def test_image_endpoint_derives_tiff_to_jpeg(setup):
     info = client.get(f"/transcribe/sessions/{sid}/images/0/info.json")
     assert info.status_code == 200
     doc = info.json()
-    assert doc["profile"] == "level1" and doc["width"] == 60
+    # R2-S7: this asserted "level1" while the service rejected four
+    # level-1-required features. The profile must match what the route will
+    # actually serve, so exercise an advertised extraFeature here rather than
+    # trusting the declaration -- test_derive.py checks the declaration itself.
+    assert doc["profile"] == "level0" and doc["width"] == 60
+    assert "sizeByW" in doc["extraFeatures"]
+    served = client.get(
+        f"/transcribe/sessions/{sid}/images/0/full/30,/0/default.jpg")
+    assert served.status_code == 200, "advertised sizeByW must actually work"
 
 
 def test_image_endpoint_rejects_unimplemented(setup):

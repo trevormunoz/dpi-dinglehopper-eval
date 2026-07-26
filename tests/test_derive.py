@@ -84,9 +84,15 @@ def test_derive_region_crops_correct_area(master_bicolor, tmp_path):
         assert r > 150 and b < 100
 
 
-def test_derive_rejects_oversized_width(master_png, tmp_path):
+def test_derive_rejects_oversized_width(master_png, tmp_path, monkeypatch):
+    # master_png is 400x200, so a plain request for 150px would neither
+    # upscale nor exceed the real MAX_DIM=4000 -- lower the bound so this
+    # test actually exercises _check_dim's `value > MAX_DIM` branch rather
+    # than riding the (separate) upscale refusal, which is what a raw
+    # 100000px request would trip regardless of any dimension bound.
+    monkeypatch.setattr("dpi_eval.derive.MAX_DIM", 100)
     with pytest.raises(DeriveError) as exc_info:
-        derive(master_png, "full", "100000,", tmp_path / "d")
+        derive(master_png, "full", "150,", tmp_path / "d")
     assert exc_info.value.status == 400
 
 
@@ -121,12 +127,19 @@ def test_derive_confined_size_never_upscales(master_png, tmp_path):
 
 def test_derive_rejects_zero_size_as_client_error(master_png, tmp_path):
     cache = tmp_path / "d"
+    # parse_params raises before derive() ever creates the cache directory,
+    # so `cache.exists()` is False here and a `... if cache.exists() else
+    # True` guard around the glob assertion is vacuously satisfied no
+    # matter what -- exercise a prior successful derive first so the
+    # directory genuinely exists when we check for a .tmp leftover.
+    derive(master_png, "full", "max", cache)
+    assert cache.exists()
     with pytest.raises(DeriveError) as exc_info:
         derive(master_png, "full", "0,", cache)
     assert exc_info.value.status == 400
     assert "master" not in str(exc_info.value).lower()
     # no .tmp leftovers from a request that never should have started a save
-    assert not any(cache.glob("**/*.tmp")) if cache.exists() else True
+    assert not any(cache.glob("**/*.tmp"))
 
 
 def test_derive_cleans_up_tmp_on_save_failure(master_png, tmp_path):
@@ -152,12 +165,26 @@ def test_image_dims_header_only(master_png):
     assert image_dims(master_png) == (400, 200)
 
 
-def test_info_json_declares_exactly_level1_plus_confined():
+def test_info_json_declares_only_what_is_implemented():
+    # Per the IIIF Image API 3.0 compliance table, level1 requires
+    # regionByPx, regionSquare, sizeByW, sizeByH, sizeByWh, baseUriRedirect
+    # and cors. This service rejects region=square, has no bare-"w,h" size
+    # form, no bare-{n}->info.json redirect and sets no CORS headers, so
+    # claiming "level1" is false advertising to any client that trusts the
+    # profile. It must declare the lower level it actually is (level0) and
+    # list only the extra features genuinely implemented.
     doc = info_json("http://127.0.0.1:8765/x/images/0", 400, 200)
     assert doc["@context"] == "http://iiif.io/api/image/3/context.json"
     assert doc["type"] == "ImageService3"
-    assert doc["profile"] == "level1"
-    assert doc["extraFeatures"] == ["sizeByConfinedWh"]
+    assert doc["profile"] == "level0"
+    assert set(doc["extraFeatures"]) == {
+        "regionByPx", "sizeByW", "sizeByH", "sizeByConfinedWh"}
+    # None of the level1-required features this service does not implement
+    # may be claimed, whether as the profile itself or via extraFeatures.
+    assert "regionSquare" not in doc["extraFeatures"]
+    assert "sizeByWh" not in doc["extraFeatures"]
+    assert "baseUriRedirect" not in doc["extraFeatures"]
+    assert "cors" not in doc["extraFeatures"]
     assert (doc["width"], doc["height"]) == (400, 200)
 
 
@@ -182,6 +209,33 @@ def test_cache_key_distinguishes_same_stem_different_masters(tmp_path):
     assert out_a != out_b
     with Image.open(out_b) as img:
         assert img.size == (60, 60)
+
+
+def test_cache_key_reflects_actual_pixels_not_request_string(master_png, tmp_path):
+    # master_png is 400x200. Two region strings that both clamp to the
+    # same actual crop (the whole master) must share one cache file, not
+    # each get their own -- otherwise an attacker sweeping the region
+    # string space (e.g. 0,0,{100..139},200) fills disk with duplicate
+    # JPEGs of identical pixels. Region is part of the cache key, so this
+    # only holds if the key is built from the clamped/actual dimensions.
+    cache = tmp_path / "d"
+    out_a = derive(master_png, "0,0,400,200", "max", cache)
+    out_b = derive(master_png, "0,0,999999999,999999999", "max", cache)
+    assert out_a == out_b
+    assert len(list(cache.glob("*.jpg"))) == 1
+
+
+def test_size_max_is_bounded_like_every_other_path(master_png, tmp_path, monkeypatch):
+    # The module docstring claims every cached derivative is bounded to
+    # MAX_DIM per axis, but size=max/full skipped _check_dim entirely and
+    # decoded the master at native resolution. Lower MAX_DIM below the
+    # master's real size (400x200) and confirm max/full is clamped to it,
+    # preserving aspect ratio rather than decoding unbounded pixels.
+    monkeypatch.setattr("dpi_eval.derive.MAX_DIM", 100)
+    out = derive(master_png, "full", "max", tmp_path / "d")
+    with Image.open(out) as img:
+        assert img.width <= 100 and img.height <= 100
+        assert img.width == 100  # 400x200 -> aspect-preserving fit to 100x?
 
 
 def test_decode_time_corruption_raises_derive_error(tmp_path):
