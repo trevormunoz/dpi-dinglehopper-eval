@@ -11,6 +11,7 @@ are the single source of truth.
 import re
 import secrets
 from html import escape
+from urllib.parse import quote
 
 _STYLE = """
   /* tokens hand-duplicated in desktop/ui/index.html — keep in sync */
@@ -393,6 +394,17 @@ terminal window it came from</span>.</footer>
     return _document("dpi-eval", body, extra_head=meta)
 
 
+def _url_path(segment: str) -> str:
+    """One path segment of a link, percent-encoded then attribute-escaped.
+
+    Report stems are ground-truth filenames, so they can hold spaces, `#`,
+    `?` and non-ASCII characters. Rendered verbatim (as they were), a `#`
+    silently truncated the link into a fragment; quoting keeps the whole
+    stem in the path, where the route decodes it again.
+    """
+    return escape(quote(segment, safe=""), quote=True)
+
+
 def _band(wer) -> tuple[str, str]:
     """Map an average WER onto a plain-language judgment band.
 
@@ -437,7 +449,7 @@ def _scores_section(
         f'<td class="num">{_pct((page_metrics.get(stem) or {}).get("wer"))}</td>'
         f'<td class="num">{_pct((page_metrics.get(stem) or {}).get("cer"))}</td>'
         f'<td class="num">{(page_metrics.get(stem) or {}).get("n_words") or "—"}</td>'
-        f'<td><a href="/runs/{run}/reports/{escape(stem)}">View diff</a></td>'
+        f'<td><a href="/runs/{run}/reports/{_url_path(stem)}">View diff</a></td>'
         "</tr>"
         for stem in succeeded
     )
@@ -474,6 +486,7 @@ def results_page(
     exit_code: int,
     summary: dict | None = None,
     page_metrics: dict[str, dict] | None = None,
+    summary_error: str | None = None,
 ) -> str:
     run = escape(run_id)
     summary = summary or {}
@@ -491,6 +504,17 @@ def results_page(
             "every page — check that the OCR files open correctly, or "
             "show this page to a supervisor.</p></div>"
         )
+    elif summary_error:
+        # A failed batch rollup forces exit code 1 (runner.py:123) even when
+        # every page graded, so the failure-rate wording below would read
+        # "Too many pages failed (0 of 1)".
+        sections.append(
+            '<div class="notice notice-warn"><p>The pages graded normally, '
+            "but the batch summary — the roll-up that averages every page — "
+            "could not be produced, so this run has no batch score. The "
+            "per-page scores below are still valid. Show this page to a "
+            "supervisor.</p></div>"
+        )
     else:
         sections.append(
             '<div class="notice notice-warn"><p>Too many pages failed '
@@ -502,9 +526,15 @@ def results_page(
         sections.append(
             _scores_section(run, succeeded, summary, page_metrics)
         )
+        # No rollup was written when summarize failed, so linking to it
+        # would be a link to "No such report."
+        full_report = (
+            "" if summary_error else
+            f'<a href="/runs/{run}/reports/summary">Full technical report</a>'
+            " &middot; "
+        )
         sections.append(
-            f'<p class="note section"><a href="/runs/{run}/reports/summary">'
-            "Full technical report</a> &middot; "
+            f'<p class="note section">{full_report}'
             f'<a href="/runs/{run}/download">Download reports (.zip)</a>'
             " — the zip goes to your Downloads folder.</p>"
         )
@@ -902,10 +932,31 @@ def session_page(session: dict, problems: list[dict], token: str) -> str:
               enctype="multipart/form-data">
           {_hidden_token(token)}
           {_picker_field("ocr_folder", "OCR folder", "Choose OCR folder")}
-          <p>or upload files <input type="file" name="ocr_files" multiple></p>
+          <p><label>Or, instead of the folder, upload the OCR files — one
+            way or the other, not both:
+            <input type="file" name="ocr_files" multiple></label></p>
           <p><button type="submit">Preview grade alignment</button></p>
         </form>
         {_picker_script(("ocr_folder",))}"""
+    # S6: the clone creates the *other* arm. The corrected arm cannot exist
+    # without a folder of machine drafts, and a from-scratch session has none
+    # to inherit, so the student chooses one here — the route refuses rather
+    # than guessing. Cloning the other way needs no drafts, so the field is
+    # not rendered there.
+    into_corrected = session["mode"] == "from_scratch"
+    other_arm = "Correct a machine draft" if into_corrected else "Type from scratch"
+    clone_drafts = ""
+    clone_picker = ""
+    if into_corrected:
+        clone_drafts = (
+            "<p>The correction arm shows a machine draft to correct, so it "
+            "needs its own folder of hOCR or <code>.txt</code> drafts named "
+            "after these pages.</p>"
+            + _picker_field("draft_folder",
+                            "Draft folder for the correction arm",
+                            "Choose draft folder")
+        )
+        clone_picker = _picker_script(("draft_folder",))
     body = f"""
     <h1>Session {escape(session["id"])}</h1>
     <p>{escape(session.get("collection") or "No collection label")} —
@@ -914,10 +965,15 @@ def session_page(session: dict, problems: list[dict], token: str) -> str:
        is collected silently.</p>
     <table><tr><th>Page</th><th>Status</th><th>Time (elapsed)</th><th>Time (active)</th></tr>{"".join(rows)}</table>
     {grade_bits}
+    <h2>Second arm of the comparison</h2>
+    <p>Creates a new session over these same pages in the other mode:
+       <strong>{other_arm}</strong>.</p>
     <form method="post" action="/transcribe/sessions/{escape(session["id"])}/clone">
       {_hidden_token(token)}
-      <p><button type="submit">New session from this selection (other arm)</button></p>
+      {clone_drafts}
+      <p><button type="submit">New session from this selection ({other_arm})</button></p>
     </form>
+    {clone_picker}
     <form method="post" action="/transcribe/sessions/{escape(session["id"])}/export">
       {_hidden_token(token)}
       <p><button type="submit">Export for repo</button></p>
@@ -946,10 +1002,27 @@ def alignment_page(session: dict, alignment: dict, token: str) -> str:
             cell = "<em>unmatched — this page will not be graded</em>"
         rows.append(f"<tr><td>{escape(page['stem'])}</td><td>{cell}</td></tr>")
     leftover = ", ".join(escape(f) for f in unmatched_files) or "none"
+    # S18: align() drops every file whose extension it does not recognise.
+    # On a screen headed "Check the alignment before grading", a silently
+    # dropped file is indistinguishable from one that was never exported.
+    ignored = alignment.get("ignored") or []
+    dropped = ""
+    if ignored:
+        items = "".join(f"<li><code>{escape(f)}</code></li>" for f in ignored)
+        dropped = (
+            '<div class="notice notice-warn"><p>These files are not going to '
+            "be graded, because grading reads only <code>.hocr</code>, "
+            "<code>.xml</code> and <code>.txt</code> files and these are "
+            "something else (page images, for instance). If one of them "
+            "really is a page's OCR, rename or re-export it and preview "
+            "again:</p>"
+            f'<ul class="stems">{items}</ul></div>'
+        )
     body = f"""
     <h1>Check the alignment before grading</h1>
     <p>Each saved page pairs with one OCR file. Fix any mispair with the
     dropdowns — nothing is graded until you confirm.</p>
+    {dropped}
     <form method="post" action="/transcribe/sessions/{escape(session["id"])}/grade/confirm">
       {_hidden_token(token)}
       <table><tr><th>Page</th><th>OCR file</th></tr>{"".join(rows)}</table>

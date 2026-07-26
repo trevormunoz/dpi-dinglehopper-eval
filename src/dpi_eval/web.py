@@ -24,7 +24,6 @@ from fastapi.responses import (
     JSONResponse,
     RedirectResponse,
 )
-from fastapi.staticfiles import StaticFiles
 
 from dpi_eval import derive, iiif, pages
 from dpi_eval import sessions as sess
@@ -207,6 +206,11 @@ def _register(run_dir: Path) -> Path:
                 "failed": result.failed,
                 "missing": result.missing,
                 "exit_code": code,
+                # run_batch now tolerates a failed batch rollup instead of
+                # discarding the whole run (S14). It forces exit code 1 when
+                # this is set, so the results page needs it to tell "the
+                # rollup failed" apart from "too many pages failed".
+                "summary_error": result.summary_error,
             }
         ),
         encoding="utf-8",
@@ -228,7 +232,13 @@ def _check_token(request: Request, form_token: str | None = None) -> None:
     X-DPI-Eval-Token header or a form field; also 403 when unset."""
     token = os.environ.get("DPI_EVAL_TOKEN")
     supplied = request.headers.get("X-DPI-Eval-Token") or form_token
-    if not token or not secrets.compare_digest(supplied or "", token):
+    # S12: compare_digest refuses non-ASCII `str` with a TypeError, so a
+    # latin-1-decoded header or a UTF-8 form field made the gate fault (500)
+    # instead of denying. UTF-8 bytes accept any input and the comparison
+    # stays constant-time for the legitimate path.
+    if not token or not secrets.compare_digest(
+        (supplied or "").encode("utf-8"), token.encode("utf-8")
+    ):
         raise HTTPException(status_code=403)
 
 
@@ -267,12 +277,45 @@ def _read_json(path: Path) -> dict | None:
         return None
 
 
+_UNSAFE_REPORT_NAME = re.compile(r"[/\\\x00-\x1f\x7f]")
+
+
+def _report_file(reports_dir: Path, name: str) -> Path | None:
+    """Resolve a "View diff" link's name to a report inside reports_dir.
+
+    Report stems are ground-truth filenames (runner.py:98), so dots, spaces
+    and non-ASCII letters are routine — `img.0001.gt.txt` writes
+    `reports/img.0001.html` — and the old `[A-Za-z0-9_-]+` gate made every
+    such link permanently dead (S17). Refused instead is anything that could
+    name a file outside reports_dir: path separators of either flavour,
+    control characters, dot-only names, and leading dots (hidden files are
+    dropped before grading, so no real report has one). Containment is then
+    re-checked against the resolved directory, so nothing rests on the
+    pattern alone. Returns None when the name is unsafe or has no report.
+    """
+    if not name or name.startswith(".") or _UNSAFE_REPORT_NAME.search(name):
+        return None
+    candidate = reports_dir / f"{name}.html"
+    try:
+        if candidate.resolve().parent != reports_dir.resolve():
+            return None
+        if not candidate.is_file():
+            return None
+    except OSError:  # e.g. a name longer than NAME_MAX
+        return None
+    return candidate
+
+
 def create_app(
     base_dir: Path, *, expected_hosts: set[str] | None = None
 ) -> FastAPI:
     base_dir.mkdir(parents=True, exist_ok=True)
     app = FastAPI(title="dpi-eval-web")
-    app.mount("/files", StaticFiles(directory=base_dir), name="files")
+    # S19: no /files static mount. It served the whole runs tree — every
+    # batch's ground truth, OCR and reports — to any local process with no
+    # token, and nothing ever linked to it: reports reach the browser only
+    # through /runs/{run_id}/reports/{name}, which applies the serve-time
+    # transform, and the zip download ships the raw originals.
 
     if expected_hosts:
         # DNS-rebinding guard (spec amendment 2026-07-18): reject any
@@ -367,15 +410,17 @@ def create_app(
             record["exit_code"],
             summary=summary,
             page_metrics=page_metrics,
+            summary_error=record.get("summary_error"),
         )
 
     @app.get("/runs/{run_id}/reports/{name}", response_class=HTMLResponse)
     def wrapped_report(run_id: str, name: str):
         record = _load_result(base_dir, run_id)
-        if record is None or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
-            return HTMLResponse(pages.error_page("No such report."), status_code=404)
-        report = base_dir / run_id / "reports" / f"{name}.html"
-        if not report.is_file():
+        report = (
+            None if record is None
+            else _report_file(base_dir / run_id / "reports", name)
+        )
+        if report is None:
             return HTMLResponse(pages.error_page("No such report."), status_code=404)
         html = report.read_text(encoding="utf-8")
         body = (
@@ -524,17 +569,39 @@ def create_app(
         _check_token(request, form.get("token"))
         files: list[tuple[str, bytes]] = []
         ocr_folder = str(form.get("ocr_folder") or "").strip()
+        uploads = [u for u in form.getlist("ocr_files")
+                   if getattr(u, "filename", None)]
+        if ocr_folder and uploads:
+            # S4: the folder used to win unconditionally and the uploads were
+            # dropped with nothing on screen to say so. The desktop shell
+            # hides the typed path field but not the file input, so the
+            # ambiguous request is easy to send by accident — name both
+            # sources and refuse rather than pick one silently.
+            return HTMLResponse(pages.error_page(
+                f"Two OCR sources arrived together: the folder {ocr_folder} "
+                f"and {len(uploads)} uploaded file(s). Grading one page "
+                "against another page's OCR is exactly the mistake this "
+                "screen exists to prevent, so nothing was staged. Clear the "
+                "folder or the upload — whichever is wrong — and preview "
+                "again."), status_code=400)
         if ocr_folder:
             folder = Path(ocr_folder)
             if not folder.is_dir():
                 return HTMLResponse(
                     pages.error_page(f"Not a readable directory: {folder}"),
                     status_code=400)
-            files = [(u.filename, u.file.read()) for u in _enumerate_dir(folder)]
+            try:
+                # S20: one unreadable file anywhere under the picked folder
+                # used to escape as an unhandled OSError → 500 traceback.
+                # /grade-paths already answers this with a friendly 400.
+                files = [(u.filename, u.file.read())
+                         for u in _enumerate_dir(folder)]
+            except OSError as exc:
+                return HTMLResponse(
+                    pages.error_page(f"Could not read files: {exc}"),
+                    status_code=400)
         else:
-            for upload in form.getlist("ocr_files"):
-                if getattr(upload, "filename", None):
-                    files.append((upload.filename, upload.file.read()))
+            files = [(u.filename, u.file.read()) for u in uploads]
         if not files:
             return HTMLResponse(
                 pages.error_page("Pick the OCR folder or upload OCR files."),
@@ -563,23 +630,39 @@ def create_app(
         return RedirectResponse(f"/runs/{run_dir.name}", status_code=303)
 
     @app.post("/transcribe/sessions/{sid}/clone")
-    def clone_session(sid: str, request: Request, token: str = Form(default=None)):
+    def clone_session(sid: str, request: Request, token: str = Form(default=None),
+                      draft_folder: str = Form(default="")):
         _check_token(request, token)
         try:
             source = sess.load_session(trans_root, sid)
             other_mode = "corrected" if source["mode"] == "from_scratch" else "from_scratch"
             selected = [p["source_index"] for p in source["pages"]]
+            # S6: cloning *into* the corrected arm needs drafts, and a
+            # from-scratch source has none to inherit (draft_source is null)
+            # — so the student picks the folder in the clone form, exactly as
+            # they would when starting a correction session from Transcribe.
+            # Cloning into the from-scratch arm takes no drafts at all, and
+            # any folder posted with it is ignored rather than half-applied.
+            drafts = None
+            if other_mode == "corrected":
+                if not draft_folder.strip():
+                    return HTMLResponse(pages.error_page(
+                        "The correction arm shows a machine draft to correct, "
+                        "so it needs its own folder of hOCR or .txt drafts — "
+                        "this session has none to copy. Go back, choose the "
+                        "draft folder, and create the other arm again."),
+                        status_code=400)
+                drafts = Path(draft_folder.strip())
             if source["source"]["type"] == "local":
                 clone = sess.create_local_session(
                     trans_root, Path(source["source"]["path"]), other_mode,
-                    source["collection"],
-                    Path(source["draft_source"]) if source.get("draft_source") else None)
+                    source["collection"], drafts)
             else:
                 records = iiif.parse_manifest(
                     iiif.fetch_manifest(source["source"]["manifest_url"]))
                 clone = sess.create_iiif_session(
                     trans_root, source["source"]["manifest_url"], records,
-                    other_mode, source["collection"])
+                    other_mode, source["collection"], drafts)
             sess.confirm_session(trans_root, clone["id"], selected)
         except (sess.SessionError, iiif.IIIFError) as exc:
             return HTMLResponse(pages.error_page(str(exc)), status_code=400)

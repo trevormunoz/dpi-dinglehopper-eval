@@ -326,6 +326,41 @@ def test_results_success_exit_still_reads_grade_another_batch():
     assert "Back to the form" not in page
 
 
+def test_results_summary_failure_does_not_claim_pages_failed():
+    """Task 3 handoff 2: a failed rollup forces exit code 1 with zero failed
+    pages, so the failure-rate branch would have said 'Too many pages failed
+    (0 of 1)'."""
+    page = _graded_results_page(exit_code=1, summary={},
+                                summary_error="dinglehopper-summarize: boom")
+    assert "Too many pages failed" not in page
+    assert "batch summary" in page
+    assert "Pages that failed to grade" not in page
+    # The pages themselves graded, so their scores are still shown.
+    assert "Per-page scores" in page
+    # summarize() never wrote summary.html, so linking to it would send the
+    # student to "No such report."
+    assert "Full technical report" not in page
+    assert "Download reports (.zip)" in page
+
+
+def test_view_diff_link_percent_encodes_the_stem():
+    """S17's other half: a stem is a filename, so `#` in one truncated the
+    href into a fragment and the link pointed at the results page itself."""
+    page = _graded_results_page(
+        succeeded=["plate#3 a"],
+        page_metrics={"plate#3 a": {"wer": 0.05, "cer": 0.02, "n_words": 3}})
+    assert 'href="/runs/run-001/reports/plate%233%20a"' in page
+
+
+def test_results_clean_run_has_no_summary_failure_notice():
+    """The desktop CI smoke test asserts a clean single-page run shows the
+    verdict and no failure copy."""
+    page = _graded_results_page()
+    assert 'class="verdict"' in page
+    assert "batch summary" not in page
+    assert "Pages that failed to grade" not in page
+
+
 def test_results_partial_success_exit_reads_grade_another_batch():
     # Partial success: some pages were graded, so "nothing was graded"
     # framing does not apply.
@@ -655,6 +690,79 @@ def test_transcription_picker_writes_the_chosen_path_into_the_input():
     # nothing else should be needed to make the existing POST carry it.
     page = pages.transcribe_home_page([], "tok")
     assert "input.value = selected" in page
+
+
+def _alignment(**overrides) -> dict:
+    result = {"matched": {"page_0001": "page_0001.txt"}, "unmatched_pages": [],
+              "unmatched_files": [], "ignored": []}
+    result.update(overrides)
+    return result
+
+
+def test_alignment_page_names_the_files_it_dropped():
+    """S18: align() drops files whose extension it does not recognise. On a
+    screen headed 'Check the alignment before grading', a silently dropped
+    file is invisible — the student cannot tell a wrong-extension export
+    from a missing one."""
+    page = pages.alignment_page(
+        _saved_session(),
+        _alignment(ignored=["page_0001.jpeg", "notes.pdf"]),
+        "tok")
+    assert "page_0001.jpeg" in page
+    assert "notes.pdf" in page
+    assert ".hocr" in page  # says which extensions are graded
+
+
+def test_alignment_page_says_nothing_when_no_files_were_dropped():
+    page = pages.alignment_page(_saved_session(), _alignment(), "tok")
+    assert "not going to be graded" not in page
+
+
+def test_alignment_page_tolerates_alignment_without_ignored_key():
+    """Staging records written before this key existed must still render."""
+    stale = _alignment()
+    del stale["ignored"]
+    assert pages.alignment_page(_saved_session(), stale, "tok")
+
+
+def _corrected_session() -> dict:
+    session = _saved_session()
+    session["mode"] = "corrected"
+    return session
+
+
+def test_grade_form_copy_states_the_exclusivity_the_server_enforces():
+    """S4: 'or upload files' implied an either/or the server did not honour —
+    it took the folder and dropped the uploads. The server now refuses the
+    ambiguous request, so the copy has to say so before the student sends it."""
+    page = pages.session_page(_saved_session(), [], "tok")
+    assert "not both" in page
+
+
+def test_clone_from_scratch_session_asks_for_a_draft_folder():
+    """S6: cloning a from-scratch session produces the corrected arm, which
+    cannot exist without a draft folder — and a from-scratch session has
+    none to inherit, so the form must collect one."""
+    page = pages.session_page(_saved_session(), [], "tok")
+    clone_form = page[page.index("/clone"):]
+    assert 'name="draft_folder"' in clone_form
+    assert 'id="draft_folder-picker-btn"' in clone_form
+
+
+def test_clone_corrected_session_asks_for_no_draft_folder():
+    """The other direction produces the from-scratch arm, which takes no
+    drafts — asking for a folder there would be a dead field."""
+    page = pages.session_page(_corrected_session(), [], "tok")
+    clone_form = page[page.index("/clone"):]
+    assert 'name="draft_folder"' not in clone_form
+
+
+def test_clone_button_names_the_arm_it_will_create():
+    """'other arm' told the student nothing about what they would get."""
+    assert "Correct a machine draft" in pages.session_page(
+        _saved_session(), [], "tok")
+    assert "Type from scratch" in pages.session_page(
+        _corrected_session(), [], "tok")
 
 
 def test_transcription_picker_has_no_iframe():

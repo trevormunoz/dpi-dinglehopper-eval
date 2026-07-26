@@ -59,8 +59,12 @@ def test_tracer_one_page_graded_through_web_path(tmp_path):
     assert results.status_code == 200
     assert "page_0" in results.text
 
-    summary = client.get("/files/run-001/reports/summary.html")
-    assert summary.status_code == 200
+    # S19: the /files static mount is gone. It served the whole runs tree —
+    # every batch's ground truth, OCR and reports — to any local process
+    # with no token, and nothing in the UI ever linked to it: reports reach
+    # the browser through the wrapping /runs/{id}/reports/{name} route.
+    assert client.get("/files/run-001/reports/summary.html").status_code == 404
+    assert (tmp_path / "runs" / "run-001" / "reports" / "summary.html").is_file()
 
     saved = json.loads(
         (tmp_path / "runs" / "run-001" / "result.json").read_text(encoding="utf-8")
@@ -354,6 +358,100 @@ def test_wrapped_report_rejects_bad_names(tmp_path):
     client = make_client(tmp_path)
     assert client.get("/runs/run-001/reports/../secret").status_code in (400, 404)
     assert client.get("/runs/nope/reports/page_0").status_code == 404
+
+
+def _run_with_report(tmp_path, stem: str) -> Path:
+    """A registered run whose one report is named `stem` — the shape the
+    engine itself produces from a `{stem}.gt.txt` ground-truth file."""
+    run = tmp_path / "runs" / "run-001"
+    (run / "reports").mkdir(parents=True)
+    (run / "result.json").write_text(
+        json.dumps({"succeeded": [stem], "failed": [], "missing": [],
+                    "exit_code": 0})
+    )
+    (run / "reports" / f"{stem}.html").write_text(
+        "<html><body><h1>diff for that page</h1></body></html>", encoding="utf-8"
+    )
+    return run
+
+
+def test_view_diff_link_for_a_dotted_stem_is_not_dead(tmp_path):
+    """S17: report stems come from ground-truth filenames, so `img.0001.gt.txt`
+    writes reports/img.0001.html and the results page links to it verbatim.
+    The [A-Za-z0-9_-]+ gate 404'd every such link."""
+    client = make_client(tmp_path)
+    _run_with_report(tmp_path, "img.0001")
+
+    results = client.get("/runs/run-001")
+    assert 'href="/runs/run-001/reports/img.0001"' in results.text
+
+    resp = client.get("/runs/run-001/reports/img.0001")
+    assert resp.status_code == 200
+    assert "diff for that page" in resp.text
+
+
+def test_report_name_with_space_and_non_ascii_is_served(tmp_path):
+    """Same defect, the other two routine shapes in scan filenames."""
+    client = make_client(tmp_path)
+    _run_with_report(tmp_path, "scan 12 — plate")
+    resp = client.get("/runs/run-001/reports/scan 12 — plate")
+    assert resp.status_code == 200
+    assert "diff for that page" in resp.text
+
+
+def test_wrapped_report_refuses_traversal_that_survives_normalisation(tmp_path):
+    """The old assertion at :353 never reached the handler: httpx collapses
+    real dot segments before sending, and Starlette's router refuses a
+    `%2F`-bearing segment before the endpoint runs. `..%5Csecret` does arrive
+    (verified: the endpoint sees `..\\secret`), and the resolver is called
+    directly with the shapes HTTP cannot deliver, so nothing here is
+    vacuous."""
+    from dpi_eval.web import _report_file
+
+    client = make_client(tmp_path)
+    run = _run_with_report(tmp_path, "page_0")
+    secret = tmp_path / "runs" / "secret.html"
+    secret.write_text("<html><body>SECRET</body></html>", encoding="utf-8")
+
+    for hostile in ("..%5Csecret", "..%2Fsecret", "..%2F..%2Fsecret",
+                    "%2Fetc%2Fpasswd", "sub%2Fpage_0"):
+        resp = client.get(f"/runs/run-001/reports/{hostile}")
+        assert resp.status_code == 404, hostile
+        assert "SECRET" not in resp.text, hostile
+
+    reports = run / "reports"
+    for hostile in ("../secret", "..", ".", "", "sub/page_0", "a\x00b",
+                    "..\\secret", "/etc/passwd", ".hidden"):
+        assert _report_file(reports, hostile) is None, hostile
+    assert _report_file(reports, "page_0") == reports / "page_0.html"
+
+
+def test_result_json_records_a_failed_batch_rollup(tmp_path, monkeypatch):
+    """Task 3 handoff 1: run_batch now reports summary_error instead of
+    discarding the run; _register dropped it, so the results page could
+    never mention it."""
+    import dpi_eval.web as web
+    from dpi_eval.runner import BatchResult
+
+    def fake_run_batch(gt_dir, ocr_dir, reports_dir):
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        return BatchResult(succeeded=["page_0"], summary_error="boom"), 1
+
+    monkeypatch.setattr(web, "run_batch", fake_run_batch)
+    gt = tmp_path / "gt"
+    ocr = tmp_path / "ocr"
+    gt.mkdir()
+    ocr.mkdir()
+    (gt / "page_0.gt.txt").write_text("hello\n")
+    (ocr / "page_0.txt").write_text("hello\n")
+    run_dir = web._run_and_register(gt, ocr, tmp_path / "runs")
+    saved = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+    assert saved["summary_error"] == "boom"
+
+    client = make_client(tmp_path)
+    page = client.get(f"/runs/{run_dir.name}")
+    assert "Pages that failed to grade" not in page.text
+    assert "rollup" in page.text or "batch summary" in page.text
 
 
 def test_pick_port_falls_back_when_preferred_taken():

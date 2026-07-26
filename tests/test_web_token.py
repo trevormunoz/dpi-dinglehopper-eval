@@ -22,6 +22,30 @@ def test_check_token_accepts_header_or_form(monkeypatch):
         _check_token(_request({}), form_token="wrong")
 
 
+def test_check_token_denies_non_ascii_supplied_token(monkeypatch):
+    """S12: secrets.compare_digest raises TypeError on a non-ASCII str, so
+    the auth gate faulted with an unhandled 500 instead of denying. A gate
+    that faults is not a gate."""
+    monkeypatch.setenv("DPI_EVAL_TOKEN", "sekrit")
+    with pytest.raises(HTTPException) as header_exc:
+        _check_token(_request({"X-DPI-Eval-Token": "sekrét"}))
+    assert header_exc.value.status_code == 403
+    with pytest.raises(HTTPException) as form_exc:
+        _check_token(_request({}), form_token="sekrét")
+    assert form_exc.value.status_code == 403
+
+
+def test_non_ascii_form_token_is_a_403_not_a_traceback(tmp_path, monkeypatch):
+    """S12 end to end: Reviewer B got an unhandled traceback out of
+    transcribe_create by posting a UTF-8 token field."""
+    monkeypatch.setenv("DPI_EVAL_TOKEN", "sekrit")
+    client = TestClient(create_app(tmp_path))
+    response = client.post(
+        "/transcribe/sessions",
+        data={"token": "sekrét", "source_type": "local", "folder": "/nope"})
+    assert response.status_code == 403
+
+
 def test_check_token_denies_when_unset(monkeypatch):
     monkeypatch.delenv("DPI_EVAL_TOKEN", raising=False)
     with pytest.raises(HTTPException):

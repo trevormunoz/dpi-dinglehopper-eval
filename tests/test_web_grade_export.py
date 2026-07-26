@@ -58,6 +58,86 @@ def test_clone_creates_other_arm_with_same_selection(session_with_gt):
     assert "from_scratch" in page.text  # opposite arm
 
 
+def _from_scratch_session(tmp_path, client, name="masters2"):
+    folder = tmp_path / name
+    folder.mkdir()
+    Image.new("RGB", (10, 10)).save(folder / "page_0.png")
+    response = client.post("/transcribe/sessions", data={
+        "token": "tok", "source_type": "local", "folder": str(folder),
+        "mode": "from_scratch", "collection": "coll"})
+    sid = response.text.split('data-session-id="', 1)[1].split('"', 1)[0]
+    client.post(f"/transcribe/sessions/{sid}/confirm",
+                data={"token": "tok", "pages": ["0"]})
+    return sid
+
+
+def test_clone_into_corrected_arm_with_a_chosen_draft_folder(session_with_gt, tmp_path):
+    """S6: the pilot compares typing from scratch against correcting a draft,
+    so the clone button has to work in both directions. from_scratch →
+    corrected always 400'd 'Correction mode needs a draft folder.' because no
+    draft folder was ever supplied — a from-scratch session has none."""
+    client, _ = session_with_gt
+    sid = _from_scratch_session(tmp_path, client)
+    drafts = tmp_path / "clone-drafts"
+    drafts.mkdir()
+    (drafts / "page_0.txt").write_text("machine draft\n")
+
+    response = client.post(f"/transcribe/sessions/{sid}/clone",
+                           data={"token": "tok", "draft_folder": str(drafts)},
+                           follow_redirects=False)
+    assert response.status_code == 303
+    new_sid = response.headers["location"].rsplit("/", 1)[-1]
+    page = client.get(f"/transcribe/sessions/{new_sid}")
+    assert "mode: corrected" in page.text
+    # The drafts really are wired up: the editor shows the draft text.
+    editor = client.get(f"/transcribe/sessions/{new_sid}/pages/0")
+    assert "machine draft" in editor.text
+
+
+def test_clone_into_corrected_arm_without_a_draft_folder_explains_why(
+        session_with_gt, tmp_path):
+    client, _ = session_with_gt
+    sid = _from_scratch_session(tmp_path, client, name="masters3")
+    response = client.post(f"/transcribe/sessions/{sid}/clone",
+                           data={"token": "tok"})
+    assert response.status_code == 400
+    assert "draft" in response.text.lower()
+
+
+def test_grade_preview_rejects_folder_and_uploads_together(session_with_gt, tmp_path):
+    """S4: ocr_folder silently won and the uploads were discarded, with no
+    way for the student to see which input was used."""
+    client, sid = session_with_gt
+    folder = tmp_path / "ocr-from-folder"
+    folder.mkdir()
+    (folder / "page_0.txt").write_text("from the folder\n")
+    response = client.post(
+        f"/transcribe/sessions/{sid}/grade/preview",
+        data={"token": "tok", "ocr_folder": str(folder)},
+        files=[("ocr_files", ("page_0.txt", b"from the upload\n"))])
+    assert response.status_code == 400
+    assert "folder" in response.text and "upload" in response.text
+
+
+def test_grade_preview_unreadable_file_is_a_friendly_error(session_with_gt, tmp_path):
+    """S20: _enumerate_dir ran outside the try, so one unreadable file
+    anywhere under the picked folder produced a 500 traceback."""
+    client, sid = session_with_gt
+    folder = tmp_path / "ocr-unreadable"
+    folder.mkdir()
+    blocked = folder / "page_0.txt"
+    blocked.write_text("hello world\n")
+    blocked.chmod(0o000)
+    try:
+        response = client.post(
+            f"/transcribe/sessions/{sid}/grade/preview",
+            data={"token": "tok", "ocr_folder": str(folder)})
+    finally:
+        blocked.chmod(0o644)
+    assert response.status_code == 400
+    assert "Could not read" in response.text
+
+
 def test_export_downloads_zip(session_with_gt):
     client, sid = session_with_gt
     response = client.post(f"/transcribe/sessions/{sid}/export", data={"token": "tok"})
